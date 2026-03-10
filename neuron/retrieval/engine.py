@@ -204,6 +204,59 @@ def _should_exclude_recent_item(source: str, title: str) -> bool:
     return False
 
 
+def _digest_source_score(meta: dict) -> float:
+    """Prefer recent, active, digestible material for the daily briefing."""
+    from datetime import date as _date
+    source = meta.get("source", "")
+    recent_date = _extract_recent_activity_date(meta) or _extract_date(meta)
+    days_old = 9999
+    if recent_date:
+        try:
+            days_old = (_date.today() - _date.fromisoformat(recent_date)).days
+        except Exception:
+            pass
+
+    if source in {"note", "apple_notes", "voice_memo", "granola"}:
+        return 2.0 if days_old <= 21 else 1.35
+    if source in {"notion", "file", "gdrive", "web"}:
+        return 1.65 if days_old <= 21 else 1.2
+    if source == "canvas":
+        title = _normalize_title(meta.get("title", ""))
+        current_course_terms = (
+            "operating systems", "computer networks", "financial accounting",
+            "analysis of algorithms", "algorithms", "os", "networks", "accounting",
+        )
+        if days_old <= 21:
+            return 1.1
+        if days_old <= 60 and any(term in title for term in current_course_terms):
+            return 0.95
+        return 0.35
+    if source in {"readwise", "kindle", "goodreads", "podcast", "youtube"}:
+        return 0.9 if days_old <= 45 else 0.55
+    return 0.75
+
+
+def _digest_item_excluded(meta: dict) -> bool:
+    import re as _re_digest_item
+    source = (meta.get("source", "") or "").lower().strip()
+    title = meta.get("title", "") or ""
+    if source in {"calendar", "gmail", "google_calendar", "apple_calendar", "spotify"}:
+        return True
+    bad_title_patterns = [
+        r'\b(exam|midterm|final|quiz|office hours|lecture)\b.*\d{1,2}:\d{2}',
+        r'\d{1,2}:\d{2}\s*(am|pm)',
+        r'\b(due|deadline)\b.*\d{1,2}/\d{1,2}',
+    ]
+    if any(_re_digest_item.search(pat, title, _re_digest_item.IGNORECASE) for pat in bad_title_patterns):
+        return True
+    if _should_exclude_recent_item(source, title):
+        return True
+    # Old passive course files are usually misleading in the digest.
+    if source == "canvas" and _digest_source_score(meta) < 0.5:
+        return True
+    return False
+
+
 def _query_source_multiplier(query: str, meta: dict) -> float:
     """Adjust ranking by query intent so schedule noise does not dominate knowledge queries."""
     source = meta.get("source", "")
@@ -1031,6 +1084,8 @@ class NeuronEngine:
     def digest(self, sample_size: int = 60) -> dict:
         """Daily briefing — uses targeted searches instead of full collection scan."""
         from datetime import datetime
+        import json
+        from pathlib import Path
         _now = datetime.now()
         today = _now.strftime("%A, %B ") + str(_now.day) + _now.strftime(", %Y")
 
@@ -1090,73 +1145,95 @@ class NeuronEngine:
                 except Exception:
                     pass
 
-        # Exclude calendar and low-signal sources from digest — they pollute the briefing
-        # NOTE: filter is applied BEFORE any sorting or processing so excluded sources
-        # can never appear in context even if they ranked highly.
-        import re as _re_digest
-        DIGEST_EXCLUDE_SOURCES = {"calendar", "gmail", "google_calendar", "apple_calendar"}
-        DIGEST_EXCLUDE_TITLE_PATTERNS = [
-            r'\b(exam|midterm|final|quiz|office hours|lecture)\b.*\d{1,2}:\d{2}',
-            r'\d{1,2}:\d{2}\s*(am|pm)',
-            r'\b(due|deadline)\b.*\d{1,2}/\d{1,2}',
-        ]
-
-        def _digest_should_exclude(title: str, source: str) -> bool:
-            if source.lower() in DIGEST_EXCLUDE_SOURCES:
-                return True
-            for pat in DIGEST_EXCLUDE_TITLE_PATTERNS:
-                if _re_digest.search(pat, title, _re_digest.IGNORECASE):
-                    return True
-            return False
-
-        filtered = [
-            item for item in best.values()
-            if not _digest_should_exclude(
-                item[2].get("title", ""),
-                item[2].get("source", "").lower().strip(),
-            )
-        ]
-        sorted_items = sorted(filtered, key=lambda x: x[0] * _recency_weight(x[2]), reverse=True)[:sample_size]
+        filtered = [item for item in best.values() if not _digest_item_excluded(item[2])]
+        sorted_items = sorted(
+            filtered,
+            key=lambda x: x[0] * _recency_weight(x[2]) * _digest_source_score(x[2]),
+            reverse=True,
+        )[:sample_size]
         all_docs  = [x[1] for x in sorted_items]
         all_metas = [x[2] for x in sorted_items]
 
         context, sources = _build_numbered_context(all_docs, all_metas)
 
+        def _read_cache(name: str) -> dict:
+            p = Path.home() / ".neuron" / name
+            if not p.exists():
+                return {}
+            try:
+                data = json.loads(p.read_text())
+                return data if isinstance(data, dict) else {}
+            except Exception:
+                return {}
+
+        study_plan = _read_cache("study_plan_cache.json")
+        news_summary = _read_cache("news_summary_cache.json")
+        recs_cache = _read_cache("recs_cache.json")
+
+        today_focus = study_plan.get("today_focus", "")
+        today_topics = ", ".join((study_plan.get("today_topics") or [])[:3])
+        exam_names = ", ".join(ex.get("name", "") for ex in (study_plan.get("exams") or [])[:2] if ex.get("name"))
+        news_text = (news_summary.get("summary") or "").strip()
+        if news_text:
+            news_text = news_text[:700]
+        media_recs = recs_cache.get("media_recommendations") or []
+        media_lines = []
+        for rec in media_recs[:3]:
+            title = rec.get("title", "")
+            kind = rec.get("type", "")
+            why = rec.get("why", "")
+            if title and kind:
+                media_lines.append(f"- {kind}: {title} — {why[:180]}")
+        media_block = "\n".join(media_lines)
+
         raw = self._chat(
-            f"You are Neuron — Ralph's second brain and learning partner. Today is {today}.\n"
-            f"Ralph is a Columbia CS student. His intellectual world spans: OS/Networks/Algorithms coursework, Torah & Jewish thought, Israel/geopolitics, AI & startups, finance, and personal projects.\n\n"
-            f"Below are excerpts from his knowledge base — things he has read, highlighted, saved, and studied.\n\n"
-            f"Write a morning briefing that feels like a message from a brilliant friend who has read everything in his library and noticed something he hasn't. "
-            f"Open with the single most interesting, non-obvious thing — not a summary, but an insight. Never start with a greeting.\n\n"
-            f"## What You're In Right Now\n"
-            f"2–3 sentences on the ideas Ralph is most actively wrestling with. "
-            f"Name actual titles, courses, or concepts from the sources — never vague categories. "
-            f"'You've been working through [specific concept] in your OS notes' or 'Your highlights from [title] keep returning to X' — specific, not generic.\n\n"
-            f"## Ideas Worth Sitting With\n"
-            f"2–3 specific arguments, questions, or passages from the sources that deserve attention today. "
-            f"Quote or closely paraphrase the actual text from the sources. Make each one feel like it was written for him right now.\n\n"
-            f"## A Connection You Might Have Missed\n"
-            f"One non-obvious link between two things in his library from DIFFERENT domains. "
-            f"The best version sounds like: 'Your [source A] and [source B] are both making the same argument about X — specifically [why].' "
-            f"Avoid connecting two CS topics or two things from the same course.\n\n"
-            f"## One Thread to Pull Today\n"
-            f"Name exactly ONE specific question, concept, or thinker worth going deeper on today. "
-            f"Make it feel timely — why is this the right moment, given what's in the library?\n\n"
+            f"You are Neuron writing Ralph's morning briefing. Today is {today}.\n"
+            f"Ralph is a Columbia CS student. He learns best when things are explained slowly, clearly, and from first principles. "
+            f"If a source is passive course material, you must treat it as something he may have saved or uploaded, not something he definitely read or understood.\n\n"
+            f"Below are excerpts from his knowledge base.\n\n"
+            f"CURRENT CONTEXT:\n"
+            f"- Today's study focus: {today_focus or 'None'}\n"
+            f"- Topics on deck: {today_topics or 'None'}\n"
+            f"- Most immediate academic items: {exam_names or 'None'}\n\n"
+            f"NEWS CONTEXT:\n{news_text or 'No fresh news summary available.'}\n\n"
+            f"OPTIONAL MEDIA RECOMMENDATIONS:\n{media_block or '- none'}\n\n"
+            f"Write a daily briefing that feels current, grounded, and easy to absorb.\n\n"
+            f"## What Feels Most Current\n"
+            f"2-3 sentences on what he has actually been touching recently. Prefer recent notes, recent files, recent notion pages, recent drive docs, and recent current-semester course material. "
+            f"Do NOT surface old material just because it is intellectually rich.\n\n"
+            f"## What To Understand Today\n"
+            f"Pick 1-2 concepts that matter right now and explain them in plain language. "
+            f"Teach gently: remind him what the term means, why it matters, and what intuition to hold onto. "
+            f"If the source is a class file or reading, say that the material covers the concept; do not imply he already knows it.\n\n"
+            f"## One Useful Connection\n"
+            f"Make one concrete cross-domain connection only if it is easy to follow in 2 sentences. "
+            f"Skip this entirely if the connection would feel forced or too abstract.\n\n"
+            f"## Coming Up\n"
+            f"In 1-2 sentences, say what is coming up soon academically. Keep it compact and practical.\n\n"
+            f"## News In Brief\n"
+            f"In 1-2 sentences, summarize only the most relevant news from the NEWS CONTEXT. Keep it digestible.\n\n"
+            f"## One Next Step\n"
+            f"End with exactly one concrete next step for today: one topic to review, one note to revisit, or one question to answer.\n\n"
+            f"## One Thing To Explore Later\n"
+            f"If the OPTIONAL MEDIA RECOMMENDATIONS are relevant, mention exactly one book, podcast, or video in one sentence and why it fits right now. If not relevant, omit this section entirely.\n\n"
             f"ABSOLUTE RULES — NEVER VIOLATE:\n"
             f"- NEVER mention calendar events, exam dates, assignment deadlines, or scheduled meetings by name\n"
-            f"- NEVER use bullet points with '•' — use markdown '- ' instead\n"
+            f"- NEVER use bullet points\n"
             f"- NEVER include raw URLs in the output\n"
             f"- Keep each section to 2-3 sentences maximum\n"
             f"- NO email subject lines or email content of any kind\n"
             f"- NO emojis whatsoever — not a single character\n"
             f"- NO phrases like 'Based on your knowledge base' or 'According to your notes'\n"
-            f"- Write in clean prose paragraphs\n"
-            f"- Sound like a thoughtful, brilliant friend — not an assistant\n\n"
+            f"- Avoid high-abstraction jargon unless you immediately explain it simply\n"
+            f"- If something seems older than the recent period, leave it out unless it clearly connects to something current\n"
+            f"- Write in clean, warm prose paragraphs\n\n"
             f"STRICT RULES:\n"
             f"- Under 420 words total\n"
-            f"- Open with the most interesting item — never with a greeting or preamble\n"
-            f"- Write in second person throughout: 'You read...', 'Your notes on X...'\n"
-            f"- NO inline citations like [1] — reference sources by name in prose\n"
+            f"- Open with the most current thing, not the most intellectually impressive thing\n"
+            f"- Write in second person throughout\n"
+            f"- For passive course material, use language like 'Your OS material covers...' or 'There's a class file on...'\n"
+            f"- For personal notes, use language like 'You wrote...' or 'In your notes...'\n"
+            f"- NO inline citations like [1]\n"
             f"- Grounded entirely in the sources below — do not invent\n\n"
             f"KNOWLEDGE SOURCES:\n{context}",
             max_tokens=1500,
