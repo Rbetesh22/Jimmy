@@ -1158,15 +1158,6 @@ class NeuronEngine:
                     pass
 
         filtered = [item for item in best.values() if not _digest_item_excluded(item[2])]
-        sorted_items = sorted(
-            filtered,
-            key=lambda x: x[0] * _recency_weight(x[2]) * _digest_source_score(x[2]),
-            reverse=True,
-        )[:sample_size]
-        all_docs  = [x[1] for x in sorted_items]
-        all_metas = [x[2] for x in sorted_items]
-
-        context, sources = _build_numbered_context(all_docs, all_metas)
 
         def _read_cache(name: str) -> dict:
             p = Path.home() / ".neuron" / name
@@ -1181,9 +1172,35 @@ class NeuronEngine:
         study_plan = _read_cache("study_plan_cache.json")
         news_summary = _read_cache("news_summary_cache.json")
         recs_cache = _read_cache("recs_cache.json")
-
         today_focus = study_plan.get("today_focus", "")
-        today_topics = ", ".join((study_plan.get("today_topics") or [])[:3])
+        today_topics_list = (study_plan.get("today_topics") or [])[:3]
+        current_course_terms = {"operating systems", "computer networks", "algorithms", "financial accounting"}
+        active_focus_terms = {t.lower() for t in today_topics_list if t} | {t for t in current_course_terms if t in (today_focus or "").lower()}
+
+        def _focus_bonus(item: tuple) -> float:
+            doc = item[1].lower()
+            meta = item[2]
+            title = (meta.get("title", "") or "").lower()
+            hay = f"{title} {doc[:300]}"
+            if not active_focus_terms:
+                return 1.0
+            if any(term in hay for term in active_focus_terms):
+                return 1.35
+            source = meta.get("source", "")
+            if source == "canvas":
+                return 0.45
+            return 0.9
+
+        sorted_items = sorted(
+            filtered,
+            key=lambda x: x[0] * _recency_weight(x[2]) * _digest_source_score(x[2]) * _focus_bonus(x),
+            reverse=True,
+        )[:sample_size]
+        all_docs  = [x[1] for x in sorted_items]
+        all_metas = [x[2] for x in sorted_items]
+
+        context, sources = _build_numbered_context(all_docs, all_metas)
+        today_topics = ", ".join(today_topics_list)
         exam_names = ", ".join(ex.get("name", "") for ex in (study_plan.get("exams") or [])[:2] if ex.get("name"))
         news_text = (news_summary.get("summary") or "").strip()
         if news_text:
@@ -1295,6 +1312,8 @@ class NeuronEngine:
         text = '\n'.join(l.rstrip() for l in text.split('\n'))
         text = _re.sub(r'^##\s*Good (morning|afternoon|evening|night|tonight)[^\n]*\n*', '', text, flags=_re.IGNORECASE)
         text = _re.sub(r'^Good (morning|afternoon|evening|night|tonight)[^\n]*\n*', '', text, flags=_re.IGNORECASE)
+        if active_focus_terms and "distributed systems" not in active_focus_terms:
+            text = _re.sub(r'[^.\n]*distributed systems[^.\n]*\.\s*', '', text, flags=_re.IGNORECASE)
         text = text.strip()
         return {"result": text, "sources": sources, "topic": "digest"}
 

@@ -18,7 +18,7 @@
 
     :root {
       /* backgrounds */
-      --bg:         #fafaf8;   /* warm off-white — editorial feel */
+      --bg:         #faf8f5;   /* warm off-white — editorial feel */
       --sidebar-bg: #ffffff;   /* clean white sidebar (Gmail / Apple Mail) */
       --surface:    #ffffff;
       --surface-2:  #f2f0ec;   /* hover / elevated */
@@ -704,6 +704,8 @@
       <span style="font-size:9px;color:var(--text-3);background:var(--surface-2);border-radius:3px;padding:1px 5px;">s&thinsp;sparks</span>
       <span style="font-size:9px;color:var(--text-3);background:var(--surface-2);border-radius:3px;padding:1px 5px;">p&thinsp;practice</span>
       <span style="font-size:9px;color:var(--text-3);background:var(--surface-2);border-radius:3px;padding:1px 5px;">t&thinsp;timeline</span>
+      <span style="font-size:9px;color:var(--text-3);background:var(--surface-2);border-radius:3px;padding:1px 5px;">l&thinsp;library</span>
+      <span style="font-size:9px;color:var(--text-3);background:var(--surface-2);border-radius:3px;padding:1px 5px;">w&thinsp;news</span>
     </div>
   </div>
 </nav>
@@ -809,6 +811,7 @@ const FALLBACK_SUGGESTIONS = [
   'What am I working on this week?',
   'Summarize my recent meetings',
   "What's due soon from my courses?",
+  'Explain Apache Arrow and how it relates to Datadog internals',
   'What have I been reading lately?',
 ];
 
@@ -841,7 +844,7 @@ function renderAsk() {
 
       <!-- Personalized greeting -->
       <div style="margin-bottom:24px;">
-        <div style="font-size:28px;font-weight:800;letter-spacing:-0.6px;font-family:var(--serif);line-height:1.2;margin-bottom:4px;">${greeting}, Ralph.</div>
+        <div style="font-size:28px;font-weight:800;letter-spacing:-0.6px;font-family:var(--serif);line-height:1.2;margin-bottom:4px;">${greeting}, <span style="color:var(--accent);">Ralph</span>.</div>
         <div style="font-size:13px;color:var(--text-3);">${dayStr}</div>
       </div>
 
@@ -1006,24 +1009,22 @@ function loadResurface() {
   const askBtn = $('resurface-ask-btn');
   if (!card || !content) return;
   card.style.display = 'block';
-  content.innerHTML = '<span style="color:var(--text-3);font-size:13px;">Loading a random memory…</span>';
-  // Use /context endpoint with a random broad query to get a memory
-  const seeds = ['an interesting idea I saved', 'something I learned recently', 'a concept from my notes', 'a book insight', 'something from my courses'];
-  const seed = seeds[Math.floor(Math.random() * seeds.length)];
-  api('/resurface', {method:'POST', body:JSON.stringify({q: seed, n_results: 1})}).then(d => {
-    const srcs = d.sources || [];
-    const src = srcs[0];
-    if (!src) { content.innerHTML = '<span style="color:var(--text-3);">Nothing found. Try ingesting more content.</span>'; return; }
-    const text = (src.full_text || src.excerpt || '').slice(0, 280);
+  content.innerHTML = '<span style="color:var(--text-3);font-size:13px;">Surfacing a random memory…</span>';
+  fetch('/resurface/random').then(r => {
+    if (!r.ok) throw new Error('Not found');
+    return r.json();
+  }).then(d => {
+    const srcIcon = ICONS[d.source] || '📌';
+    const text = (d.content || '').slice(0, 300);
     content.innerHTML = `
-      <div style="font-size:12px;color:var(--text-3);margin-bottom:6px;">${src.icon||'📌'} ${esc(src.source||'')} · ${esc((src.title||'').slice(0,60))}</div>
-      <div style="font-size:13.5px;color:var(--text-2);line-height:1.65;">${esc(text)}${text.length >= 280 ? '…' : ''}</div>`;
+      <div style="font-size:12px;color:var(--text-3);margin-bottom:6px;">${srcIcon} ${esc(d.source||'')} · ${esc((d.title||'').slice(0,60))} ${d.date ? '· '+esc(d.date) : ''}</div>
+      <div style="font-size:13.5px;color:var(--text-2);line-height:1.65;">${esc(text)}${text.length >= 300 ? '…' : ''}</div>`;
     if (askBtn) {
-      const q = 'Tell me more about: ' + (src.title || seed);
+      const q = 'Tell me more about: ' + (d.title || 'this idea');
       askBtn.onclick = () => { quickAsk(q); setMode('ask'); };
     }
   }).catch(() => {
-    content.innerHTML = '<span style="color:var(--text-3);">Couldn\'t load. Check that the server is running.</span>';
+    content.innerHTML = '<span style="color:var(--text-3);">Couldn\'t load. Check that the server is running. <button onclick="loadResurface()" style="background:none;border:none;color:var(--link);cursor:pointer;font-family:var(--font);font-size:13px;padding:0;">Retry</button></span>';
   });
 }
 
@@ -1201,7 +1202,7 @@ async function renderDigest(forceRefresh=false) {
         <!-- Masthead -->
         <div style="text-align:center;padding-bottom:18px;border-bottom:2px solid var(--border-mid);margin-bottom:32px;">
           <div style="font-size:10px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--text-3);margin-bottom:6px;">Personal Briefing</div>
-          <div style="font-size:28px;font-weight:800;letter-spacing:-0.8px;line-height:1;">${dateStr}</div>
+          <div style="font-size:28px;font-weight:800;letter-spacing:-0.8px;line-height:1;font-family:var(--serif);">${dateStr}</div>
           <div style="display:flex;align-items:center;justify-content:center;gap:14px;margin-top:8px;">
             <div style="font-size:11px;color:var(--text-3);">Updated ${cacheLabel}</div>
             <button onclick="renderDigest(true)" style="font-size:11px;color:var(--accent);background:none;border:none;cursor:pointer;padding:0;font-family:var(--font);">↻ Refresh</button>
@@ -1211,7 +1212,10 @@ async function renderDigest(forceRefresh=false) {
         <!-- Sections -->
         ${bodyHtml}
 
-        <!-- Daily extras (fact + vocab) -->
+        <!-- Today's study schedule from study-plan -->
+        <div id="study-schedule" style="margin-bottom:28px;"></div>
+
+        <!-- Daily extras (fact + vocab + parasha) -->
         <div id="daily-extras" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:28px;"></div>
 
         <!-- Sources -->
@@ -1219,6 +1223,32 @@ async function renderDigest(forceRefresh=false) {
       </div>`;
 
     renderSources($('src'), sources);
+
+    // Load study plan for today's schedule
+    fetch('/study-plan').then(r=>r.json()).then(d=>{
+      const el = $('study-schedule');
+      if (!el) return;
+      const today = (d.plan||[]).find(p=>p.is_today);
+      if (!today || !today.schedule?.length) { el.style.display='none'; return; }
+      const schedHtml = today.schedule.map(s => `
+        <div style="display:flex;align-items:flex-start;gap:12px;padding:6px 0;">
+          <div style="font-size:11.5px;color:var(--text-3);width:50px;flex-shrink:0;padding-top:1px;">${esc(s.time||'')}</div>
+          <div style="flex:1;">
+            <div style="font-size:13px;font-weight:500;color:var(--text);">${esc(s.activity||'')}</div>
+            ${s.topic ? `<div style="font-size:11.5px;color:var(--text-3);">${esc(s.topic)}</div>` : ''}
+          </div>
+          <div style="font-size:11px;color:var(--text-3);flex-shrink:0;">${s.duration_min||''}m</div>
+        </div>`).join('');
+      el.innerHTML = `
+        <div style="margin-bottom:28px;padding-bottom:28px;border-bottom:1px solid var(--border);">
+          <div style="font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--text-3);margin-bottom:10px;">📅 Today's Schedule · ${esc(today.date||'')}</div>
+          <div style="font-size:14.5px;font-weight:600;color:var(--text);margin-bottom:8px;">${esc(today.focus||'')}</div>
+          <div>${schedHtml}</div>
+          ${d.exams?.length ? `<div style="margin-top:10px;padding:8px 12px;background:rgba(193,68,14,.06);border:1px solid rgba(193,68,14,.2);border-radius:8px;font-size:12.5px;color:var(--accent);">
+            Upcoming: ${d.exams.map(e=>`${esc(e.name)} (${e.days_remaining===0?'today':e.days_remaining+'d'})`).join(' · ')}
+          </div>` : ''}
+        </div>`;
+    }).catch(() => { const el=$('study-schedule'); if(el) el.style.display='none'; });
 
     // Load daily fact + vocab (24hr cache, fast)
     fetch('/daily').then(r=>r.json()).then(d=>{
@@ -1366,21 +1396,30 @@ async function searchLoadMore() {
 function _renderSearchResults(append) {
   const resEl = $('search-results'); if (!resEl) return;
   if (!_searchResults.length) {
-    resEl.innerHTML = `<div style="color:var(--text-3);font-size:13px;padding:20px 0;">No results for "${esc(_searchQuery)}".</div>`;
+    resEl.innerHTML = `<div style="color:var(--text-3);font-size:13px;padding:20px 0;">No results for "<strong>${esc(_searchQuery)}</strong>". Try different keywords or switch sources above.</div>`;
     return;
   }
   let html = _searchResults.map((r,i) => {
     const score = r.composite_score ? Math.round(r.composite_score * 100) : '';
+    const srcIcon = ICONS[r.source] || '📌';
+    const askQ = JSON.stringify('Tell me about: ' + (r.title || r.content_preview || ''));
     return `
-      <div style="padding:14px 0;border-bottom:1px solid var(--border);cursor:pointer;"
-        onclick="quickAsk(${JSON.stringify('Tell me about: ' + (r.title||r.content_preview||''))});setMode('ask');">
-        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px;">
-          <span style="font-size:13px;font-weight:600;color:var(--text);flex:1;">${esc(r.title||'Untitled')}</span>
-          <span style="font-size:10.5px;color:var(--text-3);flex-shrink:0;">${ICONS[r.source]||'📌'} ${esc(r.source||'')}</span>
-          ${score ? `<span style="font-size:10px;color:var(--text-3);flex-shrink:0;">${score}%</span>` : ''}
+      <div style="padding:14px 0;border-bottom:1px solid var(--border);">
+        <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:6px;">
+          <span style="font-size:18px;flex-shrink:0;margin-top:1px;">${srcIcon}</span>
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:1px;line-height:1.35;">${esc(r.title||'Untitled')}</div>
+            <div style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.04em;">${esc(r.source||'')}</div>
+          </div>
+          ${score ? `<span style="font-size:10px;color:var(--text-3);flex-shrink:0;padding:2px 6px;background:var(--surface-2);border-radius:4px;">${score}%</span>` : ''}
         </div>
-        <div style="font-size:12.5px;color:var(--text-2);line-height:1.55;">${esc((r.snippet||r.content_preview||'').slice(0,180))}…</div>
-        ${r.date ? `<div style="font-size:11px;color:var(--text-3);margin-top:4px;">${esc(r.date)}</div>` : ''}
+        <div style="font-size:12.5px;color:var(--text-2);line-height:1.55;margin-bottom:8px;padding-left:28px;">${esc((r.snippet||r.content_preview||'').slice(0,200))}${(r.snippet||r.content_preview||'').length>200?'…':''}</div>
+        <div style="display:flex;align-items:center;gap:8px;padding-left:28px;">
+          ${r.date ? `<span style="font-size:11px;color:var(--text-3);">${esc(r.date)}</span>` : ''}
+          <button onclick="quickAsk(${askQ});setMode('ask');"
+            style="font-size:11.5px;color:var(--accent);background:none;border:1px solid rgba(193,68,14,0.2);border-radius:6px;padding:3px 9px;cursor:pointer;font-family:var(--font);transition:background .1s;"
+            onmouseover="this.style.background='rgba(193,68,14,0.06)'" onmouseout="this.style.background='none'">Ask about this →</button>
+        </div>
       </div>`;
   }).join('');
   if (_searchHasMore) {
@@ -1399,7 +1438,7 @@ async function renderRecent() {
     const d=await api('/recent?days=14'); const by=d.by_source||{};
     const keys=Object.keys(by);
     if(!keys.length){
-      $('content').innerHTML=`<div style="padding:32px 24px;color:var(--text-2);font-size:14px;">Nothing in the last 14 days. Try syncing sources.</div>`;return;
+      $('content').innerHTML=`<div style="padding:32px 24px;"><div style="font-size:16px;font-weight:600;margin-bottom:8px;">Nothing recent yet</div><div style="font-size:13.5px;color:var(--text-2);line-height:1.6;">No content from the last 14 days. Click "Sync Sources" to pull in fresh data from Google, Canvas, and other sources.</div></div>`;return;
     }
     const total=keys.reduce((n,k)=>n+by[k].length,0);
     setTopbar('Recent',`${total} items · last 14 days`);
@@ -1408,7 +1447,7 @@ async function renderRecent() {
       html+=`<div class="recent-group">
         <div class="recent-group-header">${ICONS[src]||'📌'} ${esc(src.replace(/_/g,' '))}</div>
         ${items.slice(0,12).map(it=>`
-          <div class="recent-item">
+          <div class="recent-item" onclick="quickAsk(${JSON.stringify('Tell me about: ' + (it.title||''))});setMode('ask');" style="cursor:pointer;">
             <div class="recent-title">${esc(it.title)}</div>
             ${it.excerpt?`<div class="recent-sub">${esc(it.excerpt.slice(0,90))}</div>`:''}
             <div class="recent-date">${it.date||''}</div>
@@ -1430,7 +1469,7 @@ async function renderUpcoming() {
   try {
     const d=await api('/upcoming?days=14'); const events=d.events||[];
     if(!events.length){
-      $('content').innerHTML=`<div style="padding:32px 24px;color:var(--text-2);font-size:14px;">No calendar events in the next 14 days. Try <code style="font-family:var(--mono);background:var(--surface-2);padding:2px 6px;border-radius:4px;">neuron ingest gcal</code>.</div>`;return;
+      $('content').innerHTML=`<div style="padding:32px 24px;"><div style="font-size:16px;font-weight:600;margin-bottom:8px;">No upcoming events</div><div style="font-size:13.5px;color:var(--text-2);line-height:1.6;">No calendar events in the next 14 days. Connect Google Calendar to see your schedule here. Run <code style="font-family:var(--mono);background:var(--surface-2);padding:2px 6px;border-radius:4px;">neuron ingest gcal</code>.</div></div>`;return;
     }
     setTopbar('Upcoming',`${events.length} events · next 14 days`);
     const today=new Date().toISOString().slice(0,10);
@@ -1574,7 +1613,8 @@ async function renderStatus() {
   try {
     const d=await api('/status'); const s=d.sources||{}; const total=d.total_chunks||0;
     const sorted=Object.entries(s).sort((a,b)=>b[1]-a[1]);
-    setTopbar('Knowledge Base',`${total.toLocaleString()} chunks indexed`);
+    const totalK = total >= 1000 ? (total/1000).toFixed(0)+'k+' : total;
+    setTopbar('Knowledge Base',`${totalK} items in your knowledge base`);
     $('content').innerHTML=`
       <div style="padding:28px;max-width:640px;" class="fade-up">
         <div style="display:flex;gap:40px;margin-bottom:32px;padding-bottom:24px;border-bottom:1px solid var(--border);">
@@ -2207,7 +2247,7 @@ async function newsRefresh() {
 }
 
 // ── LIBRARY ────────────────────────────────────────────────────────────────────
-let _libraryBooks = [], _libraryShelf = 'All', _librarySearch = '';
+let _libraryBooks = [], _libraryShelf = 'All', _librarySearch = '', _libraryCounts = {};
 
 async function renderLibrary() {
   setTopbar('Library', ''); hideInput();
@@ -2215,20 +2255,24 @@ async function renderLibrary() {
   try {
     const d = await api('/library');
     _libraryBooks = d.books || [];
+    _libraryCounts = d.counts || {};
     if (!_libraryBooks.length) {
-      $('content').innerHTML = `<div style="padding:32px 24px;color:var(--text-2);font-size:14px;">No books found. Try syncing Goodreads.</div>`;
+      $('content').innerHTML = `<div style="padding:32px 24px;"><div style="font-size:16px;font-weight:600;margin-bottom:8px;">Your library is empty</div><div style="color:var(--text-2);font-size:13.5px;line-height:1.6;">Sync your Goodreads account to see your books here. Run <code style="font-family:var(--mono);background:var(--surface-2);padding:2px 6px;border-radius:4px;">neuron ingest goodreads</code> in your terminal.</div></div>`;
       return;
     }
-    setTopbar('Library', `${_libraryBooks.length} books`);
+    const total = _libraryCounts.total || _libraryBooks.length;
+    setTopbar('Library', `${total} books · ${_libraryCounts.read||0} read · ${_libraryCounts.reading||0} reading`);
     _libraryShelf = 'All'; _librarySearch = '';
     _renderLibraryGrid();
   } catch(e) {
-    $('content').innerHTML = `<div style="padding:32px 24px;">${alertHtml(e.message,'error')}</div>`;
+    $('content').innerHTML = `<div style="padding:32px 24px;">${alertHtml('Couldn\'t load your library. Check that the server is running.','error')}<button onclick="renderLibrary()" style="margin-top:12px;padding:7px 16px;border:1px solid var(--border-mid);border-radius:8px;background:none;cursor:pointer;font-family:var(--font);font-size:13px;">Retry</button></div>`;
   }
 }
 
 function _renderLibraryGrid() {
-  const shelves = ['All','Read','Reading','Want'];
+  const shelves = ['All','Read','Currently reading','Want to read'];
+  const shelfLabels = {'All':'All','Read':'Read','Currently reading':'Reading','Want to read':'Want to Read'};
+
   let filtered = _libraryBooks.filter(b => {
     if (_libraryShelf !== 'All' && b.status !== _libraryShelf) return false;
     if (_librarySearch && !(b.title||'').toLowerCase().includes(_librarySearch.toLowerCase()) &&
@@ -2236,31 +2280,90 @@ function _renderLibraryGrid() {
     return true;
   });
 
-  const stars = n => '★'.repeat(Math.min(n||0,5)) + '☆'.repeat(Math.max(0,5-(n||0)));
+  const stars = n => n >= 5 ? '<span style="color:#f59e0b;">★★★★★</span>' :
+    n >= 4 ? '<span style="color:#f59e0b;">★★★★</span><span style="color:var(--border-mid);">★</span>' :
+    n >= 3 ? '<span style="color:#f59e0b;">★★★</span><span style="color:var(--border-mid);">★★</span>' :
+    n >= 2 ? '<span style="color:#f59e0b;">★★</span><span style="color:var(--border-mid);">★★★</span>' :
+    n >= 1 ? '<span style="color:#f59e0b;">★</span><span style="color:var(--border-mid);">★★★★</span>' : '';
+
+  // Reading stats bar
+  const rc = _libraryCounts;
+  const statsHtml = `
+    <div style="display:flex;gap:16px;padding:16px 20px;background:var(--surface);border:1px solid var(--border);border-radius:14px;margin-bottom:20px;">
+      <div style="text-align:center;flex:1;">
+        <div style="font-size:22px;font-weight:700;color:var(--text);letter-spacing:-0.5px;">${rc.read||0}</div>
+        <div style="font-size:11px;color:var(--text-3);margin-top:2px;">Read</div>
+      </div>
+      <div style="width:1px;background:var(--border);"></div>
+      <div style="text-align:center;flex:1;">
+        <div style="font-size:22px;font-weight:700;color:var(--accent);letter-spacing:-0.5px;">${rc.reading||0}</div>
+        <div style="font-size:11px;color:var(--text-3);margin-top:2px;">Reading</div>
+      </div>
+      <div style="width:1px;background:var(--border);"></div>
+      <div style="text-align:center;flex:1;">
+        <div style="font-size:22px;font-weight:700;color:var(--text);letter-spacing:-0.5px;">${rc.want||0}</div>
+        <div style="font-size:11px;color:var(--text-3);margin-top:2px;">Want to Read</div>
+      </div>
+    </div>`;
+
+  // Currently reading section
+  const currentlyReading = _libraryBooks.filter(b => b.status === 'Currently reading');
+  let currentHtml = '';
+  if (currentlyReading.length && (_libraryShelf === 'All' || _libraryShelf === 'Currently reading')) {
+    currentHtml = `
+      <div style="margin-bottom:24px;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);margin-bottom:12px;">Currently Reading</div>
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          ${currentlyReading.map((b,i) => {
+            const bi = _libraryBooks.indexOf(b);
+            const q = encodeURIComponent(b.title);
+            return `<div onclick="libOpenBook(${bi})" style="display:flex;align-items:center;gap:14px;padding:12px 14px;background:var(--surface);border:1px solid var(--border-mid);border-radius:12px;cursor:pointer;transition:background .12s;" onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background='var(--surface)'">
+              <div style="width:44px;height:64px;background:var(--surface-2);border-radius:5px;overflow:hidden;flex-shrink:0;border:1px solid var(--border);">
+                ${b.cover_url ? `<img src="${esc(b.cover_url)}" style="width:100%;height:100%;object-fit:cover;" loading="lazy" onerror="this.parentNode.innerHTML='<div style=\'display:flex;align-items:center;justify-content:center;height:100%;font-size:20px;\'>📚</div>'">` : `<div style="display:flex;align-items:center;justify-content:center;height:100%;font-size:20px;">📚</div>`}
+              </div>
+              <div style="flex:1;min-width:0;">
+                <div style="font-size:13.5px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(b.title||'')}</div>
+                ${b.author ? `<div style="font-size:12px;color:var(--text-3);">${esc(b.author)}</div>` : ''}
+              </div>
+              <a href="https://www.goodreads.com/search?q=${q}" target="_blank" rel="noopener" onclick="event.stopPropagation()"
+                style="font-size:11px;color:var(--link);text-decoration:none;border:1px solid var(--border-mid);border-radius:6px;padding:3px 8px;white-space:nowrap;flex-shrink:0;">Goodreads</a>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>`;
+  }
 
   $('content').innerHTML = `
-    <div style="padding:24px;" class="fade-up">
+    <div style="max-width:720px;padding:24px;" class="fade-up">
+      ${_libraryShelf === 'All' ? statsHtml : ''}
+      ${currentHtml}
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap;">
-        <div style="display:flex;gap:6px;">
-          ${shelves.map(s=>`<button onclick="libSetShelf('${s}')" style="padding:5px 13px;border-radius:100px;font-family:var(--font);font-size:12.5px;font-weight:${_libraryShelf===s?600:400};cursor:pointer;white-space:nowrap;transition:all .12s;border:1px solid ${_libraryShelf===s?'var(--text)':'var(--border)'};background:${_libraryShelf===s?'var(--text)':'transparent'};color:${_libraryShelf===s?'#fff':'var(--text-2)'};">${s}</button>`).join('')}
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          ${shelves.map(s=>`<button onclick="libSetShelf('${s}')" style="padding:5px 13px;border-radius:100px;font-family:var(--font);font-size:12.5px;font-weight:${_libraryShelf===s?600:400};cursor:pointer;white-space:nowrap;transition:all .12s;border:1px solid ${_libraryShelf===s?'var(--text)':'var(--border)'};background:${_libraryShelf===s?'var(--text)':'transparent'};color:${_libraryShelf===s?'#fff':'var(--text-2)'};">${shelfLabels[s]||s}</button>`).join('')}
         </div>
         <input type="text" id="lib-search" value="${esc(_librarySearch)}" placeholder="Search…" oninput="libSearch(this.value)"
-          style="flex:1;min-width:140px;max-width:240px;padding:6px 12px;border:1px solid var(--border-mid);border-radius:8px;font-family:var(--font);font-size:13px;outline:none;">
+          style="flex:1;min-width:140px;max-width:240px;padding:6px 12px;border:1px solid var(--border-mid);border-radius:8px;font-family:var(--font);font-size:13px;outline:none;background:var(--surface);">
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:20px;">
-        ${filtered.map((b,i)=>`
-          <div onclick="libOpenBook(${i})" style="cursor:pointer;">
-            <div style="width:100%;aspect-ratio:2/3;background:var(--surface-2);border-radius:8px;margin-bottom:8px;overflow:hidden;border:1px solid var(--border);">
+        ${filtered.map((b,i)=>{
+          const globalIdx = _libraryBooks.indexOf(b);
+          const isFiveStars = (b.rating||0) >= 5;
+          const q = encodeURIComponent(b.title);
+          return `
+          <div onclick="libOpenBook(${globalIdx})" style="cursor:pointer;position:relative;">
+            ${isFiveStars ? `<div style="position:absolute;top:4px;right:4px;background:#f59e0b;color:#fff;font-size:9px;font-weight:700;border-radius:4px;padding:1px 5px;z-index:1;">★ 5</div>` : ''}
+            <div style="width:100%;aspect-ratio:2/3;background:var(--surface-2);border-radius:8px;margin-bottom:8px;overflow:hidden;border:1px solid var(--border);transition:transform .12s;" onmouseover="this.style.transform='scale(1.02)'" onmouseout="this.style.transform='scale(1)'">
               ${b.cover_url
                 ? `<img src="${esc(b.cover_url)}" style="width:100%;height:100%;object-fit:cover;" loading="lazy" onerror="this.parentNode.innerHTML='<div style=\'display:flex;align-items:center;justify-content:center;height:100%;font-size:28px;\'>📚</div>'">`
                 : `<div style="display:flex;align-items:center;justify-content:center;height:100%;font-size:28px;">📚</div>`}
             </div>
             <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.3;margin-bottom:2px;">${esc((b.title||'').slice(0,40))}${(b.title||'').length>40?'…':''}</div>
             ${b.author ? `<div style="font-size:11px;color:var(--text-3);">${esc(b.author)}</div>` : ''}
-            ${b.rating ? `<div style="font-size:10px;color:#f4a12a;margin-top:2px;">${stars(b.rating)}</div>` : ''}
-          </div>`).join('')}
+            ${b.rating ? `<div style="font-size:10px;margin-top:2px;">${stars(b.rating)}</div>` : ''}
+          </div>`;
+        }).join('')}
       </div>
-      ${!filtered.length ? `<div style="color:var(--text-3);font-size:13px;padding:20px 0;">No books match.</div>` : ''}
+      ${!filtered.length ? `<div style="color:var(--text-3);font-size:13px;padding:20px 0;">No books match your search. Try a different filter or search term.</div>` : ''}
     </div>
   `;
 }
@@ -2270,7 +2373,7 @@ function libSearch(val) { _librarySearch = val; _renderLibraryGrid(); }
 
 function libOpenBook(i) {
   const b = _libraryBooks[i]; if (!b) return;
-  const stars = n => '★'.repeat(Math.min(n||0,5)) + '☆'.repeat(Math.max(0,5-(n||0)));
+  const starsHtml = n => n >= 5 ? '★★★★★' : n >= 4 ? '★★★★☆' : n >= 3 ? '★★★☆☆' : n >= 2 ? '★★☆☆☆' : n >= 1 ? '★☆☆☆☆' : '';
   const q = encodeURIComponent(b.title + (b.author ? ' ' + b.author : ''));
   const cover = b.cover_url
     ? `<img src="${esc(b.cover_url)}" style="width:80px;height:120px;object-fit:cover;border-radius:6px;border:1px solid var(--border);" onerror="this.style.display='none'">`
@@ -2280,22 +2383,44 @@ function libOpenBook(i) {
   $('drawer-title').textContent = b.title || 'Book';
   $('drawer-source').textContent = `${b.status||''} · ${b.date||''} · ${b.source||''}`;
   $('drawer-body').innerHTML = `
-    <div style="display:flex;gap:14px;margin-bottom:14px;">${cover}
+    <div style="display:flex;gap:14px;margin-bottom:16px;">${cover}
       <div style="flex:1;">
         <div style="font-size:15px;font-weight:700;line-height:1.3;margin-bottom:4px;">${esc(b.title||'')}</div>
         ${b.author ? `<div style="font-size:13px;color:var(--text-2);margin-bottom:6px;">${esc(b.author)}</div>` : ''}
-        ${b.rating ? `<div style="font-size:14px;color:#f4a12a;">${stars(b.rating)}</div>` : ''}
+        ${b.rating ? `<div style="font-size:14px;color:#f59e0b;margin-bottom:4px;">${starsHtml(b.rating)}</div>` : ''}
+        <div style="font-size:11.5px;color:var(--text-3);">${esc(b.status||'')} · ${esc(b.date||'')}</div>
       </div>
     </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
       <a href="https://www.goodreads.com/search?q=${q}" target="_blank" rel="noopener"
-        style="font-size:12px;color:var(--link);text-decoration:none;border:1px solid var(--border-mid);border-radius:6px;padding:4px 10px;">Goodreads</a>
+        style="font-size:12px;color:var(--link);text-decoration:none;border:1px solid var(--border-mid);border-radius:6px;padding:5px 11px;font-family:var(--font);">Goodreads</a>
       <button onclick="closeDrawer();quickAsk(${JSON.stringify('Tell me about the book: ' + (b.title||''))});setMode('ask');"
-        style="font-size:12px;color:var(--text);background:var(--surface-2);border:1px solid var(--border-mid);border-radius:6px;padding:4px 10px;cursor:pointer;font-family:var(--font);">Ask about this →</button>
-    </div>`;
+        style="font-size:12px;color:var(--text);background:var(--surface-2);border:1px solid var(--border-mid);border-radius:6px;padding:5px 11px;cursor:pointer;font-family:var(--font);">Ask about this →</button>
+      <button id="lib-connections-btn" onclick="libConnections(${i})"
+        style="font-size:12px;color:var(--text-2);background:none;border:1px solid var(--border-mid);border-radius:6px;padding:5px 11px;cursor:pointer;font-family:var(--font);">Connections</button>
+    </div>
+    <div id="lib-conn-result" style="font-size:13px;color:var(--text-2);line-height:1.7;"></div>`;
   const lnk = $('drawer-link');
   lnk.style.display = 'none';
   $('drawer').classList.add('open');
+}
+
+async function libConnections(i) {
+  const b = _libraryBooks[i]; if (!b) return;
+  const btn = $('lib-connections-btn');
+  const res = $('lib-conn-result');
+  if (!res) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Finding connections…'; }
+  res.innerHTML = loading('Finding connections across your KB…');
+  try {
+    const d = await api('/connections', {method:'POST', body: JSON.stringify({q: b.title, n_results: 8})});
+    const txt = d.context_pack || d.result || d.answer || 'No connections found.';
+    res.innerHTML = `<div class="prose" style="font-size:13px;">${marked.parse(txt.slice(0, 600))}</div>`;
+    if (btn) { btn.disabled = false; btn.textContent = 'Connections'; }
+  } catch(e) {
+    res.innerHTML = alertHtml(e.message, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Connections'; }
+  }
 }
 
 // ── GOODNOTES ──────────────────────────────────────────────────────────────────
@@ -2410,6 +2535,8 @@ document.addEventListener('keydown',e=>{
     if(e.key==='s') setMode('spark');
     if(e.key==='p') setMode('practice');
     if(e.key==='t') setMode('timeline');
+    if(e.key==='l') setMode('library');
+    if(e.key==='w') setMode('news');
   }
 });
 

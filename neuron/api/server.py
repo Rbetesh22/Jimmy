@@ -465,6 +465,81 @@ def connections(req: QueryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/library")
+def library_list():
+    """Return all books from Goodreads in the KB with reading status, ratings, and counts."""
+    store = get_store()
+    try:
+        result = store.collection.get(include=["metadatas", "documents"])
+    except Exception:
+        return {"books": [], "counts": {"read": 0, "reading": 0, "want": 0, "total": 0}}
+
+    books: dict[str, dict] = {}
+    for doc, meta in zip(result["documents"], result["metadatas"]):
+        src = meta.get("source", "")
+        if src != "goodreads":
+            continue
+        title = meta.get("title", "")
+        if not title:
+            continue
+        # Deduplicate by title
+        if title in books:
+            # Update date if newer
+            d = meta.get("date", "") or meta.get("created_at", "")
+            if d and d > books[title].get("date", ""):
+                books[title]["date"] = d
+            continue
+        # Parse rating and status from document text if not in metadata
+        rating = meta.get("rating", 0)
+        status = meta.get("shelf", meta.get("status", ""))
+        # Normalize status strings
+        if status in ("read", "Read"):
+            status = "Read"
+        elif status in ("currently-reading", "reading", "Currently reading"):
+            status = "Currently reading"
+        elif status in ("to-read", "want", "Want to read", "want-to-read"):
+            status = "Want to read"
+        if not status:
+            # Try to infer from doc text
+            if "currently reading" in doc.lower():
+                status = "Currently reading"
+            elif "want to read" in doc.lower() or "to-read" in doc.lower():
+                status = "Want to read"
+            else:
+                status = "Read"
+        if isinstance(rating, str):
+            try:
+                rating = int(float(rating))
+            except Exception:
+                rating = 0
+        # Extract author from metadata or document
+        author = meta.get("author", "")
+        date = meta.get("date", meta.get("created_at", ""))
+        books[title] = {
+            "title": title,
+            "author": author,
+            "status": status,
+            "rating": int(rating) if rating else 0,
+            "source": "goodreads",
+            "date": date,
+            "cover_url": meta.get("cover_url", None),
+        }
+
+    book_list = sorted(books.values(), key=lambda b: (
+        0 if b["status"] == "Currently reading" else 1 if b["status"] == "Read" else 2,
+        -(b["rating"] or 0),
+        b["date"] or ""
+    ), reverse=False)
+
+    counts = {
+        "read": sum(1 for b in book_list if b["status"] == "Read"),
+        "reading": sum(1 for b in book_list if b["status"] == "Currently reading"),
+        "want": sum(1 for b in book_list if b["status"] == "Want to read"),
+        "total": len(book_list),
+    }
+    return {"books": book_list, "counts": counts}
+
+
 @app.get("/library/connections/{title:path}")
 def library_connections(title: str):
     """Search the KB for content related to a book/resource title and return connections."""
