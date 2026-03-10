@@ -481,32 +481,45 @@ struct SparkCard: View {
                         }
                     }
 
-                    // Connection between two items as two rows with ↔
+                    // Connection between two items — two-column layout
                     if let recent = spark.recent_item, let past = spark.past_item {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(recent)
-                                .font(.system(size: 13))
-                                .foregroundStyle(.primary)
-                                .lineLimit(2)
-                                .lineSpacing(1.5)
-                            HStack(spacing: 6) {
-                                Rectangle()
-                                    .fill(accentColor.opacity(0.3))
-                                    .frame(height: 1)
-                                    .frame(width: 16)
-                                Text("↔")
+                        HStack(alignment: .top, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("RECENT")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(accentColor)
+                                    .tracking(0.5)
+                                Text(recent)
                                     .font(.system(size: 12))
-                                    .foregroundStyle(accentColor.opacity(0.7))
-                                Rectangle()
-                                    .fill(accentColor.opacity(0.3))
-                                    .frame(height: 1)
-                                    .frame(width: 16)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(3)
+                                    .lineSpacing(1.5)
                             }
-                            Text(past)
-                                .font(.system(size: 13))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                                .lineSpacing(1.5)
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(accentColor.opacity(0.07))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                            Text("↔")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(accentColor.opacity(0.5))
+                                .padding(.top, 16)
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("OLDER")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(.secondary)
+                                    .tracking(0.5)
+                                Text(past)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(3)
+                                    .lineSpacing(1.5)
+                            }
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color(UIColor.tertiarySystemFill))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
                         }
                     } else if let conn = spark.connection {
                         Text(expanded ? conn : String(conn.prefix(120)) + (conn.count > 120 ? "…" : ""))

@@ -74,7 +74,8 @@ struct PracticeView: View {
     @State private var isEvaluating = false
     @State private var errorMessage: String? = nil
     @State private var suggestions: [String] = [
-        "Operating Systems", "Computer Networks", "Algorithms", "Financial Accounting"
+        "Operating Systems", "Computer Networks", "Algorithms", "Financial Accounting",
+        "Apache Arrow", "Trino", "ClickHouse", "Distributed Systems"
     ]
     @State private var srsNextReview: String? = nil
     @State private var srsDueItems: [SRSDueItem] = []
@@ -242,11 +243,12 @@ struct PracticeView: View {
         async let s3 = try? api.srsStats()
         let (sugResult, dueResult, statsResult) = await (s1, s2, s3)
         if let r = sugResult {
-            let courses = ["Operating Systems", "Computer Networks", "Algorithms", "Financial Accounting"]
+            let courses = ["Operating Systems", "Computer Networks", "Algorithms", "Financial Accounting",
+                           "Apache Arrow", "Trino", "ClickHouse", "Distributed Systems"]
             let others = r.suggestions.filter { s in
                 !courses.contains(where: { s.lowercased().contains($0.lowercased()) })
             }
-            suggestions = Array((courses + others).prefix(6))
+            suggestions = Array((courses + others).prefix(8))
         }
         if let d = dueResult { srsDueItems = d.due }
         if let st = statsResult { srsStatsData = st }
@@ -509,7 +511,7 @@ private struct TopicInputView: View {
     @FocusState private var isFocused: Bool
 
     private var flashcards: [SRSDueItem] { srsDueItems.filter { $0.type == "flashcard" } }
-    private var dueTopics: [SRSDueItem]  { srsDueItems.filter { $0.type == "topic" } }
+    private var dueTopics: [SRSDueItem]  { srsDueItems.filter { $0.type == "topic" || $0.type == nil } }
     private var totalDue: Int { srsDueItems.count }
     private var flashcardDueCount: Int { flashcards.count }
     private var topicIsEmpty: Bool { topic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }

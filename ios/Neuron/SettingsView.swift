@@ -73,6 +73,27 @@ struct SettingsView: View {
                     }
                 }
 
+                // Countdowns
+                Section("Countdowns") {
+                    HStack {
+                        Text("Days until Datadog")
+                        Spacer()
+                        let datadogDate = Calendar.current.date(from: DateComponents(year: 2026, month: 8, day: 31))!
+                        let days = max(0, Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: Date()), to: datadogDate).day ?? 0)
+                        Text("\(days) days")
+                            .foregroundStyle(Color(hex: "#c1440e"))
+                            .fontWeight(.semibold)
+                    }
+                    HStack {
+                        Text("Days until Graduation")
+                        Spacer()
+                        let gradDate = Calendar.current.date(from: DateComponents(year: 2026, month: 5, day: 15))!
+                        let gradDays = max(0, Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: Date()), to: gradDate).day ?? 0)
+                        Text("\(gradDays) days")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 // Your Stats
                 Section("Your Stats") {
                     HStack {

@@ -227,7 +227,7 @@ struct LibraryView: View {
                                 .foregroundStyle(selectedTab == tab ? Color(UIColor.systemBackground) : .secondary)
                                 .padding(.horizontal, 14)
                                 .padding(.vertical, 7)
-                                .background(selectedTab == tab ? Color(hex: "#0071e3") : Color.clear)
+                                .background(selectedTab == tab ? Color(hex: "#c1440e") : Color.clear)
                                 .clipShape(Capsule())
                                 .overlay(Capsule().stroke(Color(UIColor.separator), lineWidth: selectedTab == tab ? 0 : 0.5))
                             }
@@ -662,7 +662,13 @@ struct BookGridCell: View {
                 }
 
                 if let rating = book.rating, rating > 0 {
-                    StarRatingView(rating: rating, size: 10, interactive: false, onRate: nil)
+                    HStack(spacing: 4) {
+                        StarRatingView(rating: rating, size: 10, interactive: false, onRate: nil)
+                        if rating == 5 {
+                            Text("⭐")
+                                .font(.system(size: 10))
+                        }
+                    }
                 }
 
                 // Reading progress bar (shown for currently reading or any book with progress > 0)
@@ -874,6 +880,21 @@ struct BookDetailSheet: View {
                             StarRatingView(rating: currentRating, size: 18, interactive: true) { newRating in
                                 currentRating = newRating
                                 Task { await saveUpdate() }
+                            }
+
+                            // Find on Goodreads link
+                            let goodreadsQuery = book.title.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? book.title
+                            if let goodreadsURL = URL(string: "https://www.goodreads.com/search?q=\(goodreadsQuery)") {
+                                Link(destination: goodreadsURL) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "arrow.up.right.square")
+                                            .font(.system(size: 11))
+                                        Text("Find on Goodreads")
+                                            .font(.system(size: 12, weight: .medium))
+                                    }
+                                    .foregroundStyle(Color(hex: "#c1440e"))
+                                }
+                                .buttonStyle(.plain)
                             }
                         }
 

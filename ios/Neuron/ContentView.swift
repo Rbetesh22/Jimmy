@@ -7,7 +7,7 @@ struct ContentView: View {
     @State private var selectedTab: Tab = .home
 
     enum Tab {
-        case home, ask, library, search, sparks, practice, news
+        case home, ask, library, search, sparks, practice, news, timeline
     }
 
     var body: some View {
@@ -40,8 +40,12 @@ struct ContentView: View {
             NewsView()
                 .tabItem { Label("News", systemImage: selectedTab == .news ? "newspaper.fill" : "newspaper") }
                 .tag(Tab.news)
+
+            TimelineView()
+                .tabItem { Label("Timeline", systemImage: selectedTab == .timeline ? "clock.fill" : "clock") }
+                .tag(Tab.timeline)
         }
-        .tint(Color(hex: "#0071e3"))
+        .tint(Color(hex: "#c1440e"))
         .onChange(of: selectedTab) { _, _ in
             if settings.hapticEnabled {
                 UISelectionFeedbackGenerator().selectionChanged()

@@ -158,6 +158,14 @@ struct HomeView: View {
                         .offset(y: contentAppeared ? 0 : 10)
                         .animation(.spring(response: 0.4, dampingFraction: 0.85).delay(0.03), value: contentAppeared)
 
+                        // ── Life Countdowns ──────────────────────────────────
+                        LifeCountdownsCard()
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 14)
+                            .opacity(contentAppeared ? 1 : 0)
+                            .offset(y: contentAppeared ? 0 : 10)
+                            .animation(.spring(response: 0.4, dampingFraction: 0.85).delay(0.04), value: contentAppeared)
+
                         // ── Exam Countdown — most urgent, shown at the top ──
                         if let exam = upcomingExams.first {
                             ExamCountdownCard(event: exam, onStudyNow: {
@@ -419,19 +427,65 @@ struct HomeView: View {
 
                         // ── Spark connection ──────────────────────────────────
                         if let spark = todayData?.spark {
-                            SectionCard(title: "Connection", icon: "bolt") {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text(spark.title ?? "")
-                                        .font(.system(size: 15, weight: .semibold))
-                                        .lineSpacing(2)
-                                    if let conn = spark.connection {
-                                        Text(conn.count > 200 ? String(conn.prefix(200)) + "…" : conn)
-                                            .font(.system(size: 13.5))
-                                            .foregroundStyle(.secondary)
-                                            .lineSpacing(3)
+                            Button {
+                                settings.pendingAskQuery = "Tell me more about: \(spark.title ?? spark.connection ?? "")"
+                            } label: {
+                                SectionCard(title: "Today's Spark", icon: "bolt.fill") {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        if let icon = spark.icon {
+                                            Text(icon)
+                                                .font(.system(size: 24))
+                                        }
+                                        Text(spark.title ?? "")
+                                            .font(.system(size: 15, weight: .semibold))
+                                            .lineSpacing(2)
+                                            .foregroundStyle(.primary)
+
+                                        // Two-column recent/older items
+                                        if let recent = spark.recent_item, let past = spark.past_item {
+                                            HStack(alignment: .top, spacing: 8) {
+                                                VStack(alignment: .leading, spacing: 3) {
+                                                    Text("RECENT")
+                                                        .font(.system(size: 8, weight: .bold))
+                                                        .foregroundStyle(Color(hex: "#c1440e"))
+                                                        .tracking(0.5)
+                                                    Text(recent)
+                                                        .font(.system(size: 11))
+                                                        .foregroundStyle(.primary)
+                                                        .lineLimit(2)
+                                                }
+                                                .padding(6)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                                .background(Color(hex: "#c1440e").opacity(0.07))
+                                                .clipShape(RoundedRectangle(cornerRadius: 6))
+
+                                                VStack(alignment: .leading, spacing: 3) {
+                                                    Text("OLDER")
+                                                        .font(.system(size: 8, weight: .bold))
+                                                        .foregroundStyle(.secondary)
+                                                        .tracking(0.5)
+                                                    Text(past)
+                                                        .font(.system(size: 11))
+                                                        .foregroundStyle(.secondary)
+                                                        .lineLimit(2)
+                                                }
+                                                .padding(6)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                                .background(Color(UIColor.tertiarySystemFill))
+                                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                            }
+                                        }
+
+                                        if let why = spark.why_it_matters {
+                                            Text(why.count > 120 ? String(why.prefix(120)) + "…" : why)
+                                                .font(.system(size: 12).italic())
+                                                .foregroundStyle(.secondary)
+                                                .lineSpacing(2)
+                                        }
                                     }
                                 }
                             }
+                            .buttonStyle(.plain)
                             .padding(.horizontal, 16)
                             .padding(.bottom, 16)
                             .opacity(contentAppeared ? 1 : 0)
@@ -732,7 +786,7 @@ struct QuickActionsRow: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                chipButton(label: "Ask anything", icon: "bubble.left", color: Color(hex: "#0071e3"), action: onAskAnything)
+                chipButton(label: "Ask anything", icon: "bubble.left", color: Color(hex: "#c1440e"), action: onAskAnything)
                 chipButton(label: "Practice OS", icon: "cpu", color: Color(hex: "#5856d6"), action: onPracticeOS)
                 chipButton(label: "Practice Networks", icon: "network", color: Color(hex: "#34c759"), action: onPracticeNetworks)
                 chipButton(label: "Review SRS", icon: "repeat", color: Color.orange, action: onReviewSRS)
@@ -763,6 +817,51 @@ struct QuickActionsRow: View {
             .overlay(Capsule().stroke(color.opacity(0.2), lineWidth: 1))
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Life Countdowns Card
+
+struct LifeCountdownsCard: View {
+    private static let accent = Color(hex: "#c1440e")
+
+    private var datadogDays: Int {
+        let target = Calendar.current.date(from: DateComponents(year: 2026, month: 8, day: 31))!
+        return max(0, Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: Date()), to: target).day ?? 0)
+    }
+
+    private var graduationDays: Int {
+        let target = Calendar.current.date(from: DateComponents(year: 2026, month: 5, day: 15))!
+        return max(0, Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: Date()), to: target).day ?? 0)
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            countdownPill(days: datadogDays, label: "Datadog", emoji: "💼", color: Self.accent)
+            countdownPill(days: graduationDays, label: "Graduation", emoji: "🎓", color: Color(red: 0.18, green: 0.55, blue: 0.34))
+        }
+    }
+
+    @ViewBuilder
+    private func countdownPill(days: Int, label: String, emoji: String, color: Color) -> some View {
+        HStack(spacing: 8) {
+            Text(emoji)
+                .font(.system(size: 20))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\(days) days")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(color)
+                Text(label)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(color.opacity(0.07))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(color.opacity(0.2), lineWidth: 1))
     }
 }
 

@@ -263,7 +263,7 @@ struct SRSDueItem: Codable, Identifiable {
         if let q = question, !q.isEmpty { return "\(card_index ?? -1)-\(q.prefix(40))" }
         return topic
     }
-    let type: String          // "topic" or "flashcard"
+    let type: String?         // "topic" or "flashcard" (optional — /today omits this field)
     let topic: String
     let next_review: String?
     let repetitions: Int
@@ -378,6 +378,7 @@ struct LibraryBook: Codable, Identifiable {
     let date_added: String?
     let date: String?         // server returns "date" field
     let cover_url: String?
+    let source: String?       // e.g. "goodreads"
 }
 
 struct LibraryCounts: Codable {

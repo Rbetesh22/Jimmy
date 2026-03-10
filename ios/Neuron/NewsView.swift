@@ -94,7 +94,7 @@ struct NewsView: View {
                             HStack(alignment: .top, spacing: 10) {
                                 Image(systemName: "brain")
                                     .font(.system(size: 13))
-                                    .foregroundStyle(Color(hex: "#0071e3"))
+                                    .foregroundStyle(Color(hex: "#c1440e"))
                                     .padding(.top, 1)
 
                                 let attrSummary = (try? AttributedString(markdown: summary)) ?? AttributedString(summary)

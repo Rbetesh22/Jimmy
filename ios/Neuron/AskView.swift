@@ -586,10 +586,12 @@ struct AskView: View {
     // MARK: - Data
 
     private let defaultSuggestions = [
-        "What am I working on this week?",
-        "Summarize my recent meetings",
-        "What have I been reading lately?",
+        "What's the parasha this week?",
+        "Summarize my OS notes on virtual memory",
+        "What do I know about Apache Arrow?",
         "What's due soon in my courses?",
+        "What have I learned about distributed systems?",
+        "What do I know about Trino or ClickHouse?",
     ]
 
     private func loadSuggestions() async {
