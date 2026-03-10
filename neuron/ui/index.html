@@ -622,6 +622,10 @@
 
     <div class="nav-section">
       <div class="nav-label">Explore</div>
+      <button class="nav-item" id="nav-search" onclick="setMode('search')">
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.5" cy="6.5" r="4"/><line x1="9.8" y1="9.8" x2="13" y2="13"/></svg>
+        Search
+      </button>
       <button class="nav-item" id="nav-news" onclick="setMode('news')">
         <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="1.5" y="2.5" width="12" height="10" rx="1.5"/><line x1="1.5" y1="5.5" x2="13.5" y2="5.5"/><line x1="4" y1="8.5" x2="8" y2="8.5"/><line x1="4" y1="10.5" x2="7" y2="10.5"/></svg>
         Today's World
@@ -633,6 +637,10 @@
       <button class="nav-item" id="nav-recent" onclick="setMode('recent')">
         <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="7.5" r="5.5"/><polyline points="7.5,4.5 7.5,7.5 9.5,9"/></svg>
         Recent
+      </button>
+      <button class="nav-item" id="nav-library" onclick="setMode('library')">
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="4" height="11" rx="1"/><rect x="7.5" y="2" width="4" height="11" rx="1"/><line x1="13" y1="2" x2="13" y2="13"/></svg>
+        Library
       </button>
       <button class="nav-item" id="nav-upcoming" onclick="setMode('upcoming')">
         <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="2" y="3" width="11" height="10" rx="1.5"/><line x1="5" y1="1.5" x2="5" y2="4.5"/><line x1="10" y1="1.5" x2="10" y2="4.5"/><line x1="2" y1="7" x2="13" y2="7"/></svg>
@@ -792,7 +800,7 @@ function setMode(m) {
   ({ask:renderAsk,digest:renderDigest,recent:renderRecent,upcoming:renderUpcoming,
     note:renderNote,url:renderURL,file:renderFile,youtube:renderYT,status:renderStatus,
     spark:renderSpark,practice:renderPractice,timeline:renderTimeline,news:renderNews,
-    goodnotes:renderGoodNotes})[m]?.();
+    goodnotes:renderGoodNotes,library:renderLibrary,search:renderSearch})[m]?.();
 }
 
 // ── ASK ────────────────────────────────────────────────────────────────────
@@ -891,7 +899,7 @@ function renderAsk() {
   fetch('/digest').then(r=>r.json()).then(d=>{
     const el = $('home-digest'); if(!el) return;
     const result = d.result || '';
-    const m = result.match(/##\s*What Needs Attention\s*\n([\s\S]*?)(?=##|$)/i);
+    const m = result.match(/##\s*(?:What(?:'s| Is) In Right Now|What You're In Right Now|What Needs Attention|On Your Plate)\s*\n([\s\S]*?)(?=##|$)/i);
     const text = m ? m[1].trim() : result.split('\n').filter(l=>l.trim()).slice(0,4).join('\n');
     el.innerHTML = `<div class="prose" style="font-size:13.5px;">${marked.parse(text.slice(0,400))}</div>`;
   }).catch(()=>{ const el=$('home-digest'); if(el) el.textContent=''; });
@@ -923,7 +931,7 @@ function renderAsk() {
   // Recommendations — 6hr cache, load last
   fetch('/recommendations').then(r=>r.json()).then(d=>{
     const el = $('home-recs'); if(!el) return;
-    const recs = d.recommendations || [];
+    const recs = d.media_recommendations || d.recommendations || [];
     if(!recs.length){ el.style.display='none'; return; }
     const recIcon = t => t==='book'?'📖':t==='youtube'?'📺':'🎧';
     el.innerHTML = recs.map((r,i)=>`
@@ -1093,8 +1101,17 @@ async function renderDigest(forceRefresh=false) {
         </div>`;
     }
 
-    const sectionOrder = ['What Needs Attention','On Your Plate','Your World','Worth Exploring','One Thread Worth Pulling'];
-    const icons = {'What Needs Attention':'⚠', 'On Your Plate':'📋', 'Your World':'🌍', 'Worth Exploring':'📖', 'One Thread Worth Pulling':'💡'};
+    // Section names from server (check both old and new naming conventions)
+    const sectionOrder = [
+      "What You're In Right Now", 'Ideas Worth Sitting With',
+      'A Connection You Might Have Missed', 'One Thread to Pull Today', 'Review Queue',
+      'What Needs Attention','On Your Plate','Your World','Worth Exploring','One Thread Worth Pulling'
+    ];
+    const icons = {
+      "What You're In Right Now": '📋', 'Ideas Worth Sitting With': '💡',
+      'A Connection You Might Have Missed': '🔗', 'One Thread to Pull Today': '🧵', 'Review Queue': '📚',
+      'What Needs Attention':'⚠', 'On Your Plate':'📋', 'Your World':'🌍', 'Worth Exploring':'📖', 'One Thread Worth Pulling':'💡'
+    };
     let bodyHtml = sectionOrder.map(s => secBlock(s, icons[s])).join('');
 
     // Fallback: if no sections parsed, just render the whole thing
@@ -1133,10 +1150,13 @@ async function renderDigest(forceRefresh=false) {
       let html = '';
 
       if (d.fact) {
+        const factText = typeof d.fact === 'object' ? (d.fact.text || '') : d.fact;
+        const factSource = typeof d.fact === 'object' ? (d.fact.source || '') : '';
         html += `
           <div style="background:var(--surface-2);border-radius:12px;padding:16px;">
             <div style="font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--text-3);margin-bottom:10px;">✦ Today's Fact</div>
-            <div style="font-size:13.5px;line-height:1.7;color:var(--text-2);">${esc(d.fact)}</div>
+            <div style="font-size:13.5px;line-height:1.7;color:var(--text-2);">${esc(factText)}</div>
+            ${factSource ? `<div style="font-size:11px;color:var(--text-3);margin-top:6px;font-style:italic;">${esc(factSource)}</div>` : ''}
           </div>`;
       }
 
@@ -1153,6 +1173,8 @@ async function renderDigest(forceRefresh=false) {
             <div style="font-size:13.5px;color:var(--text);line-height:1.6;margin-bottom:6px;">${esc(v.definition||'')}</div>
             ${v.etymology ? `<div style="font-size:11.5px;color:var(--text-3);line-height:1.5;margin-bottom:6px;font-style:italic;">${esc(v.etymology)}</div>` : ''}
             ${v.example ? `<div style="font-size:12px;color:var(--text-2);line-height:1.6;border-left:2px solid var(--border-mid);padding-left:10px;">${esc(v.example)}</div>` : ''}
+            ${v.context ? `<div style="font-size:11.5px;color:var(--text-3);line-height:1.5;margin-top:6px;font-style:italic;">${esc(v.context)}</div>` : ''}
+            ${v.source ? `<div style="font-size:10.5px;color:var(--text-3);margin-top:4px;">— ${esc(v.source)}</div>` : ''}
           </div>`;
       }
 
@@ -1163,6 +1185,111 @@ async function renderDigest(forceRefresh=false) {
   } catch(e) {
     $('content').innerHTML=`<div style="padding:32px 24px;">${alertHtml(e.message,'error')}</div>`;
   }
+}
+
+// ── SEARCH ─────────────────────────────────────────────────────────────────
+const SEARCH_SOURCES = ['All','canvas','apple_notes','file','web','gmail','notion','goodreads','calendar'];
+let _searchResults = [], _searchOffset = 0, _searchQuery = '', _searchSource = 'All', _searchHasMore = false;
+
+function renderSearch() {
+  setTopbar('Search', '');
+  $('content').innerHTML = `
+    <div style="max-width:800px;padding:24px 28px 60px;" class="fade-up">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;" id="search-source-pills">
+        ${SEARCH_SOURCES.map(s=>`<button onclick="searchSetSource('${s}')"
+          style="padding:5px 13px;border-radius:100px;font-family:var(--font);font-size:12.5px;font-weight:${s==='All'?600:400};cursor:pointer;white-space:nowrap;border:1px solid ${s==='All'?'var(--text)':'var(--border)'};background:${s==='All'?'var(--text)':'transparent'};color:${s==='All'?'#fff':'var(--text-2)'};"
+          id="search-src-${s}">${s==='All'?'All':s.replace(/_/g,' ')}</button>`).join('')}
+      </div>
+      <div id="search-results" style="margin-top:4px;">
+        <div style="color:var(--text-3);font-size:13.5px;padding:20px 0;">Type to search your knowledge base…</div>
+      </div>
+    </div>`;
+  showInput(`<div class="input-row">
+    <input type="text" id="search-inp" style="flex:1;" placeholder="Search your knowledge base…"
+      onkeydown="if(event.key==='Enter') doSearch()" oninput="if(this.value.length>2||this.value.length===0) searchDebounce()">
+    <button class="btn btn-primary" id="search-btn" onclick="doSearch()">Search</button>
+  </div>`);
+  _searchResults = []; _searchOffset = 0; _searchQuery = ''; _searchSource = 'All';
+  setTimeout(() => $('search-inp')?.focus(), 60);
+}
+
+let _searchTimer = null;
+function searchDebounce() {
+  clearTimeout(_searchTimer);
+  _searchTimer = setTimeout(doSearch, 350);
+}
+
+function searchSetSource(src) {
+  _searchSource = src; _searchOffset = 0;
+  SEARCH_SOURCES.forEach(s => {
+    const btn = $(`search-src-${s}`);
+    if (!btn) return;
+    const active = s === src;
+    btn.style.fontWeight = active ? 600 : 400;
+    btn.style.border = `1px solid ${active ? 'var(--text)' : 'var(--border)'}`;
+    btn.style.background = active ? 'var(--text)' : 'transparent';
+    btn.style.color = active ? '#fff' : 'var(--text-2)';
+  });
+  if (_searchQuery) doSearch();
+}
+
+async function doSearch() {
+  const inp = $('search-inp');
+  const q = inp?.value.trim();
+  if (!q) return;
+  _searchQuery = q; _searchOffset = 0;
+  const resEl = $('search-results'); if (!resEl) return;
+  resEl.innerHTML = loading('Searching…');
+  try {
+    const srcParam = _searchSource !== 'All' ? `&source=${encodeURIComponent(_searchSource)}` : '';
+    const d = await api(`/search?q=${encodeURIComponent(q)}&n=10${srcParam}`);
+    _searchResults = d.results || [];
+    _searchHasMore = d.has_more || false;
+    setTopbar('Search', `${d.total||_searchResults.length} result${_searchResults.length===1?'':'s'}`);
+    _renderSearchResults(false);
+  } catch(e) {
+    resEl.innerHTML = alertHtml(e.message, 'error');
+  }
+}
+
+async function searchLoadMore() {
+  _searchOffset += 10;
+  const q = _searchQuery; if (!q) return;
+  const srcParam = _searchSource !== 'All' ? `&source=${encodeURIComponent(_searchSource)}` : '';
+  try {
+    const d = await api(`/search?q=${encodeURIComponent(q)}&n=10&offset=${_searchOffset}${srcParam}`);
+    _searchResults = _searchResults.concat(d.results || []);
+    _searchHasMore = d.has_more || false;
+    _renderSearchResults(true);
+  } catch(e) {}
+}
+
+function _renderSearchResults(append) {
+  const resEl = $('search-results'); if (!resEl) return;
+  if (!_searchResults.length) {
+    resEl.innerHTML = `<div style="color:var(--text-3);font-size:13px;padding:20px 0;">No results for "${esc(_searchQuery)}".</div>`;
+    return;
+  }
+  let html = _searchResults.map((r,i) => {
+    const score = r.composite_score ? Math.round(r.composite_score * 100) : '';
+    return `
+      <div style="padding:14px 0;border-bottom:1px solid var(--border);cursor:pointer;"
+        onclick="quickAsk(${JSON.stringify('Tell me about: ' + (r.title||r.content_preview||''))});setMode('ask');">
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px;">
+          <span style="font-size:13px;font-weight:600;color:var(--text);flex:1;">${esc(r.title||'Untitled')}</span>
+          <span style="font-size:10.5px;color:var(--text-3);flex-shrink:0;">${ICONS[r.source]||'📌'} ${esc(r.source||'')}</span>
+          ${score ? `<span style="font-size:10px;color:var(--text-3);flex-shrink:0;">${score}%</span>` : ''}
+        </div>
+        <div style="font-size:12.5px;color:var(--text-2);line-height:1.55;">${esc((r.snippet||r.content_preview||'').slice(0,180))}…</div>
+        ${r.date ? `<div style="font-size:11px;color:var(--text-3);margin-top:4px;">${esc(r.date)}</div>` : ''}
+      </div>`;
+  }).join('');
+  if (_searchHasMore) {
+    html += `<div style="padding:12px 0;text-align:center;">
+      <button onclick="searchLoadMore()" style="font-size:12.5px;color:var(--text-2);background:none;border:1px solid var(--border-mid);border-radius:8px;padding:7px 18px;cursor:pointer;font-family:var(--font);">Load more</button>
+    </div>`;
+  }
+  resEl.innerHTML = html;
 }
 
 // ── RECENT ─────────────────────────────────────────────────────────────────
@@ -1538,7 +1665,7 @@ function showExercise(idx) {
   practiceAnswered = false;
   const ex = practiceExercises[idx];
   const diffColors = { easy:'#34c759', medium:'#ff9f0a', hard:'#ff375f' };
-  const typeLabels = { concept:'Concept', application:'Application', coding:'Coding' };
+  const typeLabels = { concept:'Concept', application:'Application', coding:'Coding', multiple_choice:'Multiple Choice' };
   const progress = `${idx+1} / ${practiceExercises.length}`;
   const pct = Math.round((idx / practiceExercises.length) * 100);
 
@@ -1562,16 +1689,25 @@ function showExercise(idx) {
           <span style="font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-3);padding:2px 8px;border-radius:100px;background:var(--surface-2);">${typeLabels[ex.type]||ex.type||'Exercise'}</span>
           ${ex.source_hint ? `<span style="font-size:11px;color:var(--text-3);">· ${esc(ex.source_hint)}</span>` : ''}
         </div>
-        <div style="font-size:15px;font-weight:500;line-height:1.65;color:var(--text);margin-bottom:${ex.type==='coding'?'16px':'0'};">${esc(ex.question||'')}</div>
+        <div style="font-size:15px;font-weight:500;line-height:1.65;color:var(--text);margin-bottom:${ex.type==='coding'?'16px':'0'};">${esc(ex.type==='multiple_choice' ? (ex.question||'').split('\n')[0] : (ex.question||''))}</div>
         ${ex.type==='coding' ? `<div style="font-size:11px;color:var(--text-3);margin-top:4px;">Write your code in the box below — it won't be executed, just evaluated by Neuron</div>` : ''}
       </div>
 
       <!-- Answer area -->
-      <textarea id="ex-answer" rows="${ex.type==='coding'?8:3}"
-        style="width:100%;font-family:${ex.type==='coding'?'var(--mono)':'var(--font)'};font-size:${ex.type==='coding'?'13px':'14px'};background:var(--surface);border:1.5px solid var(--border-mid);border-radius:12px;padding:12px 14px;color:var(--text);outline:none;line-height:1.6;transition:border-color .15s;resize:vertical;"
-        placeholder="${ex.type==='coding' ? '# Write your code here…' : 'Type your answer…'}"
-        onfocus="this.style.borderColor='rgba(0,0,0,0.3)';this.style.boxShadow='0 0 0 3px rgba(0,0,0,0.05)'"
-        onblur="this.style.borderColor='var(--border-mid)';this.style.boxShadow='none'"></textarea>
+      ${ex.type==='multiple_choice' && ex.options?.length
+        ? `<div id="mcq-options" style="display:flex;flex-direction:column;gap:8px;margin-bottom:4px;">
+            ${ex.options.map((opt,oi)=>`<button id="mcq-opt-${oi}" onclick="selectMCQ(${oi})" data-val="${esc(opt)}"
+              style="text-align:left;padding:11px 15px;border:1.5px solid var(--border-mid);border-radius:10px;background:var(--surface);color:var(--text);font-family:var(--font);font-size:13.5px;cursor:pointer;transition:all .12s;line-height:1.5;"
+              onmouseover="if(!this.dataset.selected)this.style.borderColor='rgba(0,0,0,0.25)'"
+              onmouseout="if(!this.dataset.selected)this.style.borderColor='var(--border-mid)'">${esc(opt)}</button>`).join('')}
+           </div>
+           <input type="hidden" id="ex-answer" value="">`
+        : `<textarea id="ex-answer" rows="${ex.type==='coding'?8:3}"
+            style="width:100%;font-family:${ex.type==='coding'?'var(--mono)':'var(--font)'};font-size:${ex.type==='coding'?'13px':'14px'};background:var(--surface);border:1.5px solid var(--border-mid);border-radius:12px;padding:12px 14px;color:var(--text);outline:none;line-height:1.6;transition:border-color .15s;resize:vertical;"
+            placeholder="${ex.type==='coding' ? '# Write your code here…' : 'Type your answer…'}"
+            onfocus="this.style.borderColor='rgba(0,0,0,0.3)';this.style.boxShadow='0 0 0 3px rgba(0,0,0,0.05)'"
+            onblur="this.style.borderColor='var(--border-mid)';this.style.boxShadow='none'"></textarea>`
+      }
 
       <!-- Feedback area -->
       <div id="ex-feedback" style="margin-top:12px;display:none;"></div>
@@ -1592,6 +1728,26 @@ function showExercise(idx) {
   `;
 
   setTimeout(() => $('ex-answer')?.focus(), 60);
+}
+
+function selectMCQ(idx) {
+  const value = $(`mcq-opt-${idx}`)?.dataset?.val || '';
+  // Deselect all options
+  document.querySelectorAll('[id^="mcq-opt-"]').forEach(btn => {
+    btn.style.borderColor = 'var(--border-mid)';
+    btn.style.background = 'var(--surface)';
+    delete btn.dataset.selected;
+  });
+  // Select chosen option
+  const btn = $(`mcq-opt-${idx}`);
+  if (btn) {
+    btn.style.borderColor = 'rgba(0,0,0,0.35)';
+    btn.style.background = 'var(--surface-2)';
+    btn.dataset.selected = '1';
+  }
+  // Store value in hidden input
+  const inp = $('ex-answer');
+  if (inp) inp.value = value;
 }
 
 function showHint() {
@@ -1912,6 +2068,98 @@ async function newsRefresh() {
   // Clear cache via refresh=true, then re-render
   try { await fetch('/news?refresh=true'); } catch {}
   renderNews();
+}
+
+// ── LIBRARY ────────────────────────────────────────────────────────────────────
+let _libraryBooks = [], _libraryShelf = 'All', _librarySearch = '';
+
+async function renderLibrary() {
+  setTopbar('Library', ''); hideInput();
+  $('content').innerHTML = `<div style="padding:32px 24px;">${loading('Loading your library…')}</div>`;
+  try {
+    const d = await api('/library');
+    _libraryBooks = d.books || [];
+    if (!_libraryBooks.length) {
+      $('content').innerHTML = `<div style="padding:32px 24px;color:var(--text-2);font-size:14px;">No books found. Try syncing Goodreads.</div>`;
+      return;
+    }
+    setTopbar('Library', `${_libraryBooks.length} books`);
+    _libraryShelf = 'All'; _librarySearch = '';
+    _renderLibraryGrid();
+  } catch(e) {
+    $('content').innerHTML = `<div style="padding:32px 24px;">${alertHtml(e.message,'error')}</div>`;
+  }
+}
+
+function _renderLibraryGrid() {
+  const shelves = ['All','Read','Reading','Want'];
+  let filtered = _libraryBooks.filter(b => {
+    if (_libraryShelf !== 'All' && b.status !== _libraryShelf) return false;
+    if (_librarySearch && !(b.title||'').toLowerCase().includes(_librarySearch.toLowerCase()) &&
+        !(b.author||'').toLowerCase().includes(_librarySearch.toLowerCase())) return false;
+    return true;
+  });
+
+  const stars = n => '★'.repeat(Math.min(n||0,5)) + '☆'.repeat(Math.max(0,5-(n||0)));
+
+  $('content').innerHTML = `
+    <div style="padding:24px;" class="fade-up">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap;">
+        <div style="display:flex;gap:6px;">
+          ${shelves.map(s=>`<button onclick="libSetShelf('${s}')" style="padding:5px 13px;border-radius:100px;font-family:var(--font);font-size:12.5px;font-weight:${_libraryShelf===s?600:400};cursor:pointer;white-space:nowrap;transition:all .12s;border:1px solid ${_libraryShelf===s?'var(--text)':'var(--border)'};background:${_libraryShelf===s?'var(--text)':'transparent'};color:${_libraryShelf===s?'#fff':'var(--text-2)'};">${s}</button>`).join('')}
+        </div>
+        <input type="text" id="lib-search" value="${esc(_librarySearch)}" placeholder="Search…" oninput="libSearch(this.value)"
+          style="flex:1;min-width:140px;max-width:240px;padding:6px 12px;border:1px solid var(--border-mid);border-radius:8px;font-family:var(--font);font-size:13px;outline:none;">
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:20px;">
+        ${filtered.map((b,i)=>`
+          <div onclick="libOpenBook(${i})" style="cursor:pointer;">
+            <div style="width:100%;aspect-ratio:2/3;background:var(--surface-2);border-radius:8px;margin-bottom:8px;overflow:hidden;border:1px solid var(--border);">
+              ${b.cover_url
+                ? `<img src="${esc(b.cover_url)}" style="width:100%;height:100%;object-fit:cover;" loading="lazy" onerror="this.parentNode.innerHTML='<div style=\'display:flex;align-items:center;justify-content:center;height:100%;font-size:28px;\'>📚</div>'">`
+                : `<div style="display:flex;align-items:center;justify-content:center;height:100%;font-size:28px;">📚</div>`}
+            </div>
+            <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.3;margin-bottom:2px;">${esc((b.title||'').slice(0,40))}${(b.title||'').length>40?'…':''}</div>
+            ${b.author ? `<div style="font-size:11px;color:var(--text-3);">${esc(b.author)}</div>` : ''}
+            ${b.rating ? `<div style="font-size:10px;color:#f4a12a;margin-top:2px;">${stars(b.rating)}</div>` : ''}
+          </div>`).join('')}
+      </div>
+      ${!filtered.length ? `<div style="color:var(--text-3);font-size:13px;padding:20px 0;">No books match.</div>` : ''}
+    </div>
+  `;
+}
+
+function libSetShelf(shelf) { _libraryShelf = shelf; _renderLibraryGrid(); }
+function libSearch(val) { _librarySearch = val; _renderLibraryGrid(); }
+
+function libOpenBook(i) {
+  const b = _libraryBooks[i]; if (!b) return;
+  const stars = n => '★'.repeat(Math.min(n||0,5)) + '☆'.repeat(Math.max(0,5-(n||0)));
+  const q = encodeURIComponent(b.title + (b.author ? ' ' + b.author : ''));
+  const cover = b.cover_url
+    ? `<img src="${esc(b.cover_url)}" style="width:80px;height:120px;object-fit:cover;border-radius:6px;border:1px solid var(--border);" onerror="this.style.display='none'">`
+    : `<div style="width:80px;height:120px;background:var(--surface-2);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:28px;border:1px solid var(--border);">📚</div>`;
+
+  // Use drawer to show book detail
+  $('drawer-title').textContent = b.title || 'Book';
+  $('drawer-source').textContent = `${b.status||''} · ${b.date||''} · ${b.source||''}`;
+  $('drawer-body').innerHTML = `
+    <div style="display:flex;gap:14px;margin-bottom:14px;">${cover}
+      <div style="flex:1;">
+        <div style="font-size:15px;font-weight:700;line-height:1.3;margin-bottom:4px;">${esc(b.title||'')}</div>
+        ${b.author ? `<div style="font-size:13px;color:var(--text-2);margin-bottom:6px;">${esc(b.author)}</div>` : ''}
+        ${b.rating ? `<div style="font-size:14px;color:#f4a12a;">${stars(b.rating)}</div>` : ''}
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
+      <a href="https://www.goodreads.com/search?q=${q}" target="_blank" rel="noopener"
+        style="font-size:12px;color:var(--link);text-decoration:none;border:1px solid var(--border-mid);border-radius:6px;padding:4px 10px;">Goodreads</a>
+      <button onclick="closeDrawer();quickAsk(${JSON.stringify('Tell me about the book: ' + (b.title||''))});setMode('ask');"
+        style="font-size:12px;color:var(--text);background:var(--surface-2);border:1px solid var(--border-mid);border-radius:6px;padding:4px 10px;cursor:pointer;font-family:var(--font);">Ask about this →</button>
+    </div>`;
+  const lnk = $('drawer-link');
+  lnk.style.display = 'none';
+  $('drawer').classList.add('open');
 }
 
 // ── GOODNOTES ──────────────────────────────────────────────────────────────────
