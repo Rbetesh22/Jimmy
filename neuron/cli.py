@@ -7,36 +7,185 @@ from rich.table import Table
 console = Console()
 
 
-def chunk_text(text: str, chunk_size: int = 1500, overlap: int = 200) -> list[str]:
+def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 50, min_chunk: int = 100) -> list[str]:
+    """
+    Split text into semantic chunks on paragraph and sentence boundaries.
+
+    Strategy:
+    1. Split on blank lines (paragraph boundaries).
+    2. Accumulate paragraphs until approaching chunk_size (max 1000 chars).
+    3. When a chunk would exceed chunk_size, flush it and start a new one
+       with the last `overlap` characters of the previous chunk prepended
+       for context continuity.
+    4. Paragraphs longer than chunk_size are split at sentence boundaries
+       (". " or "\n\n") — never in the middle of a sentence.
+    5. Chunks shorter than min_chunk (100 chars) are merged into the next chunk.
+    """
+    import re as _re
+
     if len(text) <= chunk_size:
-        return [text]
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = min(start + chunk_size, len(text))
-        chunks.append(text[start:end])
-        start += chunk_size - overlap
-    return chunks
+        return [text] if len(text) >= min_chunk else ([text] if text.strip() else [])
+
+    def _split_at_sentence_boundary(text: str, max_len: int) -> str:
+        """Return the longest prefix of text that ends at a sentence boundary and is <= max_len."""
+        if len(text) <= max_len:
+            return text
+        # Look for ". " or "\n\n" boundary within the allowed length
+        candidate = text[:max_len]
+        # Try ". " boundary (scan backwards)
+        idx = candidate.rfind(". ")
+        if idx > 0:
+            return candidate[:idx + 1]
+        # Try "\n\n" boundary
+        idx2 = candidate.rfind("\n\n")
+        if idx2 > 0:
+            return candidate[:idx2]
+        # Try "! " or "? " boundary
+        for marker in ("! ", "? "):
+            idx3 = candidate.rfind(marker)
+            if idx3 > 0:
+                return candidate[:idx3 + 1]
+        # No sentence boundary found — fall back to hard limit
+        return candidate
+
+    # Split into paragraphs (one or more blank lines)
+    raw_paragraphs = _re.split(r"\n{2,}", text)
+    paragraphs: list[str] = []
+    for para in raw_paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+        # Split overlong paragraphs at sentence boundaries
+        if len(para) > chunk_size:
+            # Split on sentence-ending punctuation followed by space/newline
+            sentences = _re.split(r"(?<=[.!?])\s+", para)
+            buf = ""
+            for sent in sentences:
+                if len(buf) + len(sent) + 1 <= chunk_size:
+                    buf = (buf + " " + sent).strip() if buf else sent
+                else:
+                    if buf:
+                        paragraphs.append(buf)
+                    # If a single sentence is still too long, split at sentence boundary
+                    while len(sent) > chunk_size:
+                        part = _split_at_sentence_boundary(sent, chunk_size)
+                        paragraphs.append(part)
+                        sent = sent[len(part):].lstrip()
+                    buf = sent
+            if buf:
+                paragraphs.append(buf)
+        else:
+            paragraphs.append(para)
+
+    if not paragraphs:
+        return [text[:chunk_size]] if text.strip() else []
+
+    chunks: list[str] = []
+    current_parts: list[str] = []
+    current_len = 0
+    tail = ""  # overlap text from the previous chunk
+
+    for para in paragraphs:
+        # Would adding this paragraph exceed the limit?
+        additional = len(para) + (1 if current_parts else 0)  # +1 for newline separator
+        if current_len + additional > chunk_size and current_parts:
+            # Flush current chunk — ensure it ends at a sentence boundary
+            chunk = "\n\n".join(current_parts)
+            chunks.append(chunk)
+            # Prepare overlap: take last `overlap` chars of flushed chunk
+            tail = chunk[-overlap:] if len(chunk) > overlap else chunk
+            current_parts = []
+            current_len = 0
+
+            # Prepend tail to new chunk for context continuity
+            if tail and not para.startswith(tail[-20:]):
+                current_parts = [tail, para]
+                current_len = len(tail) + 2 + len(para)
+            else:
+                current_parts = [para]
+                current_len = len(para)
+        else:
+            current_parts.append(para)
+            current_len += additional
+
+    # Flush remaining
+    if current_parts:
+        chunk = "\n\n".join(current_parts)
+        if len(chunk) < min_chunk and chunks:
+            # Merge tiny trailing chunk into the previous one
+            chunks[-1] = chunks[-1] + "\n\n" + chunk
+        else:
+            chunks.append(chunk)
+
+    # Final pass: drop any chunks below min_chunk (shouldn't happen, but guard)
+    return [c for c in chunks if len(c) >= min_chunk] or [text[:chunk_size]]
+
+
+def is_low_quality_chunk(text: str) -> bool:
+    """Filter out noise chunks that add no value."""
+    text_lower = text.lower().strip()
+
+    # Too short to be useful
+    if len(text.strip()) < 80:
+        return True
+
+    # Email boilerplate patterns
+    noise_patterns = [
+        "unsubscribe", "click here to unsubscribe", "view in browser",
+        "you are receiving this", "to opt out", "privacy policy",
+        "calendar invite", "accepted your invitation", "declined your invitation",
+        "this is an automated", "do not reply to this email",
+        "sent from my iphone", "sent from my ipad",
+        "get outlook for", "confidentiality notice",
+        "this email and any attachments", "privileged and confidential",
+    ]
+    if any(p in text_lower for p in noise_patterns):
+        # Only filter if these are the MAIN content (not just in a footer)
+        if len(text.strip()) < 300:
+            return True
+
+    # Calendar event with no description (just metadata)
+    if text_lower.startswith("[calendar:") and len(text.strip()) < 150:
+        return True
+
+    # Mostly whitespace or repeated characters
+    non_space = len(text.replace(" ", "").replace("\n", ""))
+    if non_space < 50:
+        return True
+
+    return False
 
 
 def _store_docs(docs, label: str):
+    from datetime import datetime, timezone
     from .storage.store import NeuronStore
     from .config import CHROMA_DIR
     store = NeuronStore(CHROMA_DIR)
     chunks, metadatas, ids = [], [], []
     seen: set[str] = set()
+    skipped = 0
+    ingested_at = datetime.now(timezone.utc).isoformat()
     for doc in docs:
         prefix = f"[{doc.source.upper()}: {doc.title}]\n\n"
         for i, chunk in enumerate(chunk_text(doc.content)):
             cid = f"{doc.id}_c{i}"
             if cid not in seen:
+                if is_low_quality_chunk(chunk):
+                    skipped += 1
+                    continue
                 seen.add(cid)
                 chunks.append(prefix + chunk)
-                metadatas.append({**doc.metadata, "title": doc.title, "source": doc.source})
+                metadata = {**doc.metadata}
+                metadata.setdefault("created_at", ingested_at)
+                metadata.setdefault("ingested_at", ingested_at)
+                metadata["title"] = doc.title
+                metadata["source"] = doc.source
+                metadatas.append(metadata)
                 ids.append(cid)
     if chunks:
         store.upsert(chunks, metadatas, ids)
-        console.print(f"[green]✓ {label}: {len(chunks)} chunks from {len(docs)} documents[/]")
+        skip_note = f", {skipped} noise chunks skipped" if skipped else ""
+        console.print(f"[green]✓ {label}: {len(chunks)} chunks from {len(docs)} documents{skip_note}[/]")
     else:
         console.print(f"[yellow]No content found.[/]")
 
@@ -159,8 +308,7 @@ def ingest_folder(path, no_recurse, source):
 
 @ingest.command(name="goodnotes")
 @click.argument("path", required=False, default=None,
-                metavar="[PATH]",
-                help="Folder, .goodnotes file, or PDF to ingest. Omit to auto-scan iCloud.")
+                metavar="[PATH]")
 def ingest_goodnotes(path):
     """Ingest GoodNotes notebooks.
 

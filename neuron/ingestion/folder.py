@@ -3,7 +3,7 @@ from pathlib import Path
 from .base import Document
 from .file import FileIngester
 
-SUPPORTED = {".pdf", ".txt", ".md", ".docx", ".doc", ".rtf", ".csv"}
+SUPPORTED = {".pdf", ".txt", ".md", ".docx", ".rtf", ".csv"}
 
 # Notion exports filenames like "My Page abc123def456.md" — strip the UUID suffix
 _NOTION_UUID = re.compile(r'\s+[0-9a-f]{32}$')

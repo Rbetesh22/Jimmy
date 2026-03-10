@@ -9,9 +9,13 @@ class FileIngester:
             raise FileNotFoundError(f"File not found: {path}")
 
         suffix = p.suffix.lower()
+        if suffix == ".doc":
+            raise ValueError(
+                "Legacy .doc files are not supported. Convert the file to .docx, .pdf, or .txt first."
+            )
         if suffix == ".pdf":
             content = self._read_pdf(p)
-        elif suffix in (".docx", ".doc"):
+        elif suffix == ".docx":
             content = self._read_docx(p)
         elif suffix == ".pptx":
             content = self._read_pptx(p)

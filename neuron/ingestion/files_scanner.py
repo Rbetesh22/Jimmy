@@ -14,7 +14,7 @@ SKIP_DIRS = {
     "Library", "Applications", ".Trash", "snap",
 }
 
-SUPPORTED_EXTS = {".pdf", ".docx", ".txt", ".md", ".doc", ".rtf"}
+SUPPORTED_EXTS = {".pdf", ".docx", ".txt", ".md", ".rtf"}
 
 # Skip files that are too small (likely empty/stub) or too large
 MIN_BYTES = 200

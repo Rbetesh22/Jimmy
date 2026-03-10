@@ -48,7 +48,7 @@ _RECORDING_RE = re.compile(
 )
 
 # Supported downloadable extensions
-_SLIDE_EXTS = {".pdf", ".pptx", ".ppt", ".docx"}
+_SLIDE_EXTS = {".pdf", ".pptx", ".docx"}
 
 
 def _root_domain(url: str) -> str:
