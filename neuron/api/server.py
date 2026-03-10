@@ -1443,8 +1443,11 @@ def news_summary():
         if not by_cat:
             return {"summary": ""}
 
-        from datetime import date as _date
+        from datetime import date as _date, datetime as _dt
+        from zoneinfo import ZoneInfo
+        now = _dt.now(ZoneInfo("America/New_York"))
         today = _date.today().strftime("%A, %B %-d, %Y")
+        daypart = "morning" if now.hour < 12 else "afternoon" if now.hour < 17 else "evening" if now.hour < 22 else "tonight"
 
         # Build headline context
         ctx_parts = []
@@ -1456,11 +1459,11 @@ def news_summary():
 
         engine = get_engine()
         summary_text = engine._chat(
-            f"You are writing a personal morning briefing for Ralph — a Columbia University student intensely interested in "
+            f"You are writing a personal {daypart} briefing for Ralph — a Columbia University student intensely interested in "
             f"Israel/Middle East (especially current events, IDF, Hamas, geopolitics), Torah/Jewish life (parasha, halacha, Rabbi Avi Harari), "
             f"AI/startups (OpenAI, Anthropic, LLMs), Columbia University, US politics, and finance. Today is {today}.\n\n"
             f"Today's headlines by category:\n{ctx}\n\n"
-            f"Write a rich morning briefing with 4 sections (use markdown ## headers). Be substantive — this is the main briefing, not a teaser.\n\n"
+            f"Write a rich {daypart} briefing with 4 sections (use markdown ## headers). Be substantive — this is the main briefing, not a teaser.\n\n"
             f"## What's Happening\n"
             f"Lead with Israel/Middle East if anything is there — give 3-4 sentences covering the key development, who's involved, what it means. "
             f"If no Israel story, lead with the biggest world or political story. Be specific: names, places, numbers.\n\n"

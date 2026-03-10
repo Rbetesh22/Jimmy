@@ -257,6 +257,16 @@ def _digest_item_excluded(meta: dict) -> bool:
     return False
 
 
+def _daypart_label(hour: int) -> str:
+    if hour < 12:
+        return "morning"
+    if hour < 17:
+        return "afternoon"
+    if hour < 22:
+        return "evening"
+    return "tonight"
+
+
 def _query_source_multiplier(query: str, meta: dict) -> float:
     """Adjust ranking by query intent so schedule noise does not dominate knowledge queries."""
     source = meta.get("source", "")
@@ -1086,8 +1096,10 @@ class NeuronEngine:
         from datetime import datetime
         import json
         from pathlib import Path
-        _now = datetime.now()
+        from zoneinfo import ZoneInfo
+        _now = datetime.now(ZoneInfo("America/New_York"))
         today = _now.strftime("%A, %B ") + str(_now.day) + _now.strftime(", %Y")
+        daypart = _daypart_label(_now.hour)
 
         if self.store.count() == 0:
             return {"result": "Knowledge base is empty.", "sources": [], "topic": "digest"}
@@ -1187,7 +1199,7 @@ class NeuronEngine:
         media_block = "\n".join(media_lines)
 
         raw = self._chat(
-            f"You are Neuron writing Ralph's morning briefing. Today is {today}.\n"
+            f"You are Neuron writing Ralph's {daypart} briefing. Today is {today}.\n"
             f"Ralph is a Columbia CS student. He learns best when things are explained slowly, clearly, and from first principles. "
             f"If a source is passive course material, you must treat it as something he may have saved or uploaded, not something he definitely read or understood.\n\n"
             f"Below are excerpts from his knowledge base.\n\n"
@@ -1230,6 +1242,7 @@ class NeuronEngine:
             f"STRICT RULES:\n"
             f"- Under 420 words total\n"
             f"- Open with the most current thing, not the most intellectually impressive thing\n"
+            f"- NEVER start with 'Good morning', 'Good afternoon', 'Good evening', or any greeting/header line\n"
             f"- Write in second person throughout\n"
             f"- For passive course material, use language like 'Your OS material covers...' or 'There's a class file on...'\n"
             f"- For personal notes, use language like 'You wrote...' or 'In your notes...'\n"
@@ -1280,6 +1293,8 @@ class NeuronEngine:
         text = _re.sub(r'\n{3,}', '\n\n', '\n'.join(lines))
         # Remove trailing whitespace from each line
         text = '\n'.join(l.rstrip() for l in text.split('\n'))
+        text = _re.sub(r'^##\s*Good (morning|afternoon|evening|night|tonight)[^\n]*\n*', '', text, flags=_re.IGNORECASE)
+        text = _re.sub(r'^Good (morning|afternoon|evening|night|tonight)[^\n]*\n*', '', text, flags=_re.IGNORECASE)
         text = text.strip()
         return {"result": text, "sources": sources, "topic": "digest"}
 
