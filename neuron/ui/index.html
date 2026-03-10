@@ -25,8 +25,8 @@
       --border:     rgba(0,0,0,0.07);
       --border-mid: rgba(0,0,0,0.12);
       /* accent = dark charcoal — no colored chrome, only typography rules */
-      --accent:     #1c1c1e;   /* iOS system label — warm near-black */
-      --accent-dim: rgba(0,0,0,0.05);
+      --accent:     #c1440e;   /* terracotta */
+      --accent-dim: rgba(193,68,14,0.07);
       /* text hierarchy (iOS label system) */
       --text:       #1c1c1e;
       --text-2:     #6c6c70;
@@ -37,6 +37,7 @@
       --danger:     #ff3b30;
       --warning:    #ff9f0a;
       --font:       -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+      --serif:      Georgia, "Times New Roman", serif;
       --mono:       "SF Mono", ui-monospace, Menlo, monospace;
       --sidebar-w:  200px;
       --ease:       cubic-bezier(0.4, 0, 0.2, 1);
@@ -812,11 +813,19 @@ const FALLBACK_SUGGESTIONS = [
 ];
 
 function renderAsk() {
-  const hour = new Date().getHours();
+  const now = new Date();
+  const hour = now.getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
-  const dayStr = new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+  const dayStr = now.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
   setTopbar('Neuron', dayStr);
   hideInput();
+
+  // Countdowns
+  const dataDogDate = new Date('2026-08-31');
+  const gradDate = new Date('2026-05-15');
+  const msPerDay = 86400000;
+  const dataDogDays = Math.max(0, Math.ceil((dataDogDate - now) / msPerDay));
+  const gradDays = Math.max(0, Math.ceil((gradDate - now) / msPerDay));
 
   const pills = ['ask','context','resurface','connections'];
   const pillLabels = {ask:'Ask',context:'Deep Dive',resurface:'Resurface',connections:'Thread Map'};
@@ -828,11 +837,41 @@ function renderAsk() {
   };
 
   $('content').innerHTML = `
-    <div style="max-width:660px;margin:0 auto;padding:36px 28px 80px;" class="fade-up">
+    <div style="max-width:720px;margin:0 auto;padding:36px 28px 80px;" class="fade-up">
 
-      <!-- Greeting + ask -->
+      <!-- Personalized greeting -->
+      <div style="margin-bottom:24px;">
+        <div style="font-size:28px;font-weight:800;letter-spacing:-0.6px;font-family:var(--serif);line-height:1.2;margin-bottom:4px;">${greeting}, Ralph.</div>
+        <div style="font-size:13px;color:var(--text-3);">${dayStr}</div>
+      </div>
+
+      <!-- Countdown milestones -->
+      <div style="display:flex;gap:10px;margin-bottom:24px;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;flex-shrink:0;">
+          <span style="font-size:13px;">🏢</span>
+          <div>
+            <div style="font-size:11px;color:var(--text-3);">Datadog starts in</div>
+            <div style="font-size:15px;font-weight:700;color:var(--accent);letter-spacing:-0.3px;">${dataDogDays} days</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;flex-shrink:0;">
+          <span style="font-size:13px;">🎓</span>
+          <div>
+            <div style="font-size:11px;color:var(--text-3);">Graduation in</div>
+            <div style="font-size:15px;font-weight:700;color:var(--text);letter-spacing:-0.3px;">${gradDays} days</div>
+          </div>
+        </div>
+        <button onclick="loadResurface()" style="display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;cursor:pointer;font-family:var(--font);transition:background .12s;flex-shrink:0;" onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background='var(--surface)'">
+          <span style="font-size:13px;">✦</span>
+          <div style="text-align:left;">
+            <div style="font-size:11px;color:var(--text-3);">Resurface</div>
+            <div style="font-size:12px;font-weight:600;color:var(--text);">Random memory</div>
+          </div>
+        </button>
+      </div>
+
+      <!-- Ask input -->
       <div style="margin-bottom:32px;">
-        <div style="font-size:24px;font-weight:700;letter-spacing:-0.5px;margin-bottom:16px;">${greeting}</div>
         <div class="input-row" style="gap:8px;margin-bottom:8px;">
           <textarea id="ask-inp" rows="1" placeholder="Ask anything…"
             onkeydown="askKey(event)" oninput="autoResize(this)" style="font-size:14px;padding:11px 15px;"></textarea>
@@ -843,8 +882,19 @@ function renderAsk() {
         </div>
       </div>
 
+      <!-- Resurface card (hidden until triggered) -->
+      <div id="resurface-card" style="display:none;margin-bottom:28px;padding:16px 20px;background:var(--surface-2);border:1px solid var(--border-mid);border-radius:14px;">
+        <div style="font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px;">✦ From your knowledge base</div>
+        <div id="resurface-content" style="font-size:13.5px;color:var(--text-2);line-height:1.7;"></div>
+        <div style="display:flex;gap:8px;margin-top:10px;">
+          <button id="resurface-ask-btn" onclick="" style="font-size:12px;color:var(--link);background:none;border:1px solid var(--border-mid);border-radius:6px;padding:4px 10px;cursor:pointer;font-family:var(--font);">Ask about this →</button>
+          <button onclick="loadResurface()" style="font-size:12px;color:var(--text-3);background:none;border:none;cursor:pointer;font-family:var(--font);">↻ Another</button>
+        </div>
+      </div>
+
       <!-- Suggestions (minimal) -->
       <div style="margin-bottom:32px;padding-bottom:28px;border-bottom:1px solid var(--border);">
+        <div style="font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);margin-bottom:10px;">Suggested questions</div>
         <div id="suggestion-grid" style="display:flex;flex-direction:column;gap:4px;">
           ${FALLBACK_SUGGESTIONS.map(q=>`<button class="suggestion" onclick="quickAsk(${JSON.stringify(q)})">${esc(q)}</button>`).join('')}
         </div>
@@ -871,7 +921,7 @@ function renderAsk() {
       <!-- Spark -->
       <div style="margin-bottom:28px;padding-bottom:28px;border-bottom:1px solid var(--border);">
         <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px;">
-          <div style="font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);">Connection</div>
+          <div style="font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);">Connection of the Day</div>
           <button onclick="setMode('spark')" style="font-size:12px;color:var(--accent);background:none;border:none;cursor:pointer;padding:0;font-family:var(--font);">All sparks →</button>
         </div>
         <div id="home-spark" style="color:var(--text-2);font-size:13.5px;line-height:1.7;"></div>
@@ -948,6 +998,33 @@ function renderAsk() {
         </div>
       </div>`).join('');
   }).catch(()=>{ const el=$('home-recs'); if(el) el.style.display='none'; });
+}
+
+function loadResurface() {
+  const card = $('resurface-card');
+  const content = $('resurface-content');
+  const askBtn = $('resurface-ask-btn');
+  if (!card || !content) return;
+  card.style.display = 'block';
+  content.innerHTML = '<span style="color:var(--text-3);font-size:13px;">Loading a random memory…</span>';
+  // Use /context endpoint with a random broad query to get a memory
+  const seeds = ['an interesting idea I saved', 'something I learned recently', 'a concept from my notes', 'a book insight', 'something from my courses'];
+  const seed = seeds[Math.floor(Math.random() * seeds.length)];
+  api('/resurface', {method:'POST', body:JSON.stringify({q: seed, n_results: 1})}).then(d => {
+    const srcs = d.sources || [];
+    const src = srcs[0];
+    if (!src) { content.innerHTML = '<span style="color:var(--text-3);">Nothing found. Try ingesting more content.</span>'; return; }
+    const text = (src.full_text || src.excerpt || '').slice(0, 280);
+    content.innerHTML = `
+      <div style="font-size:12px;color:var(--text-3);margin-bottom:6px;">${src.icon||'📌'} ${esc(src.source||'')} · ${esc((src.title||'').slice(0,60))}</div>
+      <div style="font-size:13.5px;color:var(--text-2);line-height:1.65;">${esc(text)}${text.length >= 280 ? '…' : ''}</div>`;
+    if (askBtn) {
+      const q = 'Tell me more about: ' + (src.title || seed);
+      askBtn.onclick = () => { quickAsk(q); setMode('ask'); };
+    }
+  }).catch(() => {
+    content.innerHTML = '<span style="color:var(--text-3);">Couldn\'t load. Check that the server is running.</span>';
+  });
 }
 
 function setQType(t) {
@@ -1181,6 +1258,28 @@ async function renderDigest(forceRefresh=false) {
       if (html) el.innerHTML = html;
       else el.style.display = 'none';
     }).catch(() => { const el=$('daily-extras'); if(el) el.style.display='none'; });
+
+    // Parasha card — from /ask/quick
+    fetch('/ask/quick', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({q: 'What is the parasha of the week? Give the name and one key insight or lesson from it.'})
+    }).then(r => r.json()).then(d => {
+      if (!d.answer) return;
+      const extrasEl = $('daily-extras');
+      if (!extrasEl) return;
+      const parashaHtml = `
+        <div style="background:linear-gradient(135deg,#fdf6ee,#f5ede0);border:1px solid #e8d5bc;border-radius:12px;padding:16px;grid-column:1/-1;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+            <span style="font-size:16px;">✡</span>
+            <div style="font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#8b6914;">This Week's Parasha</div>
+            <a href="https://www.chabad.org/parasha" target="_blank" rel="noopener"
+              style="margin-left:auto;font-size:11px;color:#c1440e;text-decoration:none;font-family:var(--font);">chabad.org →</a>
+          </div>
+          <div style="font-size:13.5px;color:var(--text);line-height:1.7;">${marked.parse(d.answer)}</div>
+        </div>`;
+      extrasEl.insertAdjacentHTML('beforeend', parashaHtml);
+    }).catch(() => {});
 
   } catch(e) {
     $('content').innerHTML=`<div style="padding:32px 24px;">${alertHtml(e.message,'error')}</div>`;
@@ -1589,10 +1688,47 @@ const PRACTICE_SUGGESTIONS = [
   'Data Structures', 'Networking', 'Machine Learning',
 ];
 
+const DATADOG_TOPICS = [
+  {label: 'Apache Arrow', desc: 'Columnar memory format', q: 'Apache Arrow columnar memory format'},
+  {label: 'Trino', desc: 'Distributed SQL query engine', q: 'Trino distributed SQL query engine'},
+  {label: 'ClickHouse', desc: 'OLAP database', q: 'ClickHouse OLAP database'},
+  {label: 'Apache Calcite', desc: 'Query planning & optimization', q: 'Apache Calcite query planning optimization'},
+];
+
 function renderPractice() {
+  const now = new Date();
+  const dataDogDate = new Date('2026-08-31');
+  const dataDogDays = Math.max(0, Math.ceil((dataDogDate - now) / 86400000));
+
   setTopbar('Practice', 'Reinforce what you\'ve learned');
   $('content').innerHTML = `
-    <div class="ingest-wrap fade-up" style="max-width:620px;">
+    <div class="ingest-wrap fade-up" style="max-width:680px;">
+
+      <!-- Datadog Prep section -->
+      <div style="margin-bottom:32px;padding:20px 22px;background:linear-gradient(135deg,#fff5f0,#ffeee6);border:1.5px solid #f0c8b4;border-radius:16px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:20px;">🐕</span>
+            <div style="font-size:16px;font-weight:700;letter-spacing:-0.3px;color:var(--text);">Datadog Prep</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:11px;color:var(--text-3);">Starts Aug 31, 2026</div>
+            <div style="font-size:18px;font-weight:700;color:var(--accent);letter-spacing:-0.5px;">${dataDogDays} days</div>
+          </div>
+        </div>
+        <div style="font-size:12.5px;color:var(--text-3);margin-bottom:16px;">Master the core data infrastructure tools used at Datadog.</div>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;">
+          ${DATADOG_TOPICS.map(t => `
+            <button onclick="quickPractice(${JSON.stringify(t.q)})"
+              style="text-align:left;padding:12px 14px;background:var(--surface);border:1px solid #e8c9b8;border-radius:10px;cursor:pointer;font-family:var(--font);transition:all .12s;"
+              onmouseover="this.style.background='#fff8f5';this.style.borderColor='#c1440e'"
+              onmouseout="this.style.background='var(--surface)';this.style.borderColor='#e8c9b8'">
+              <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:2px;">${esc(t.label)}</div>
+              <div style="font-size:11px;color:var(--text-3);">${esc(t.desc)}</div>
+            </button>`).join('')}
+        </div>
+      </div>
+
       <h2 style="font-size:20px;">What do you want to practice?</h2>
       <p>Neuron generates exercises from everything you've ever ingested — notes, courses, highlights, meetings.</p>
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin:14px 0 4px;">

@@ -703,11 +703,20 @@ class NeuronEngine:
         today = datetime.now().strftime("%A, %B %d")
 
         # Generate fact
+        RALPH_CONTEXT = (
+            "Ralph is a Columbia CS MS student starting at Datadog (query engineering team) on Aug 31 2026. "
+            "He is Jewish, observant, and interested in Torah study. "
+            "He is preparing for exams in Operating Systems, Computer Networks, and Algorithms this week. "
+            "He is also preparing for Datadog by studying Apache Arrow, Trino, ClickHouse, and Apache Calcite."
+        )
+
         fact_raw = self._chat(
             f"You are a curious tutor. Today is {today}.\n\n"
-            f"Based on the excerpts below from the user's knowledge base, surface ONE genuinely interesting "
-            f"fact or insight that they probably haven't consciously noticed or synthesized yet. "
-            f"It should feel surprising, delightful, or intellectually satisfying.\n\n"
+            f"{RALPH_CONTEXT}\n\n"
+            f"Based on the excerpts below from his knowledge base, surface ONE genuinely interesting "
+            f"fact or insight that he probably hasn't consciously noticed or synthesized yet. "
+            f"Prioritize topics from his active courses (OS, Networks, Algorithms) or his Datadog prep "
+            f"(query engines: Arrow, Trino, ClickHouse, Calcite) or his Jewish/Torah interests.\n\n"
             f"Rules:\n"
             f"- 2–3 sentences max. No filler. No 'Did you know?'\n"
             f"- Ground it in the sources — don't invent\n"
@@ -719,22 +728,36 @@ class NeuronEngine:
             max_tokens=200,
         )
 
-        # Generate vocab word
+        # Generate vocab word — prioritize CS/tech terms relevant to Datadog prep or current courses
         vocab_raw = self._chat(
             f"You are a vocabulary tutor. Today is {today}.\n\n"
-            f"Based on the excerpts below from the user's knowledge base, choose ONE interesting word "
-            f"that appears in or is directly relevant to what they are studying. "
-            f"Prioritize domain-specific terms, interesting etymologies, or words they likely use but may not know deeply.\n\n"
+            f"{RALPH_CONTEXT}\n\n"
+            f"Based on the excerpts below from his knowledge base, choose ONE interesting word "
+            f"that appears in or is directly relevant to what he is studying. "
+            f"Prioritize CS/tech terms relevant to his Datadog prep (query engines, distributed systems, "
+            f"columnar storage) or his current courses (OS, Networks, Algorithms). "
+            f"Also consider Torah/Hebrew terms if a strong one appears.\n\n"
             f"Return a JSON object with exactly these fields (no markdown, no extra text):\n"
             f'{{"word": "...", "pronunciation": "...", "part_of_speech": "...", '
             f'"definition": "...", "etymology": "...", "example": "..."}}\n\n'
             f"Rules:\n"
             f"- definition: one clear sentence\n"
             f"- etymology: origin language + root meaning, 1 sentence\n"
-            f"- example: a sentence using the word in context of their studies\n"
+            f"- example: a sentence using the word in context of his studies or Datadog prep\n"
             f"- No padding\n\n"
             f"SOURCES:\n{vocab_context}",
             max_tokens=300,
+        )
+
+        # Generate personalized motivational note
+        motivational_raw = self._chat(
+            f"Write a single motivational sentence (1 sentence only, no more) for Ralph.\n"
+            f"{RALPH_CONTEXT}\n"
+            f"Today is {today}. Make it specific to his situation — Datadog prep, Columbia finals, "
+            f"or his Jewish values. Keep it genuine, not cheesy. "
+            f"Return ONLY the sentence, nothing else.",
+            max_tokens=80,
+            model="claude-haiku-4-5-20251001",
         )
 
         import json as _json
@@ -746,7 +769,11 @@ class NeuronEngine:
         except Exception:
             pass
 
-        return {"fact": fact_raw.strip() if fact_raw else None, "vocab": vocab}
+        return {
+            "fact": fact_raw.strip() if fact_raw else None,
+            "vocab": vocab,
+            "motivational_note": motivational_raw.strip() if motivational_raw else None,
+        }
 
     def build_topic_graph(self) -> dict:
         """Two-pass topic graph: nodes first, then grounded edges. Cache to ~/.neuron/graph_cache.json."""
