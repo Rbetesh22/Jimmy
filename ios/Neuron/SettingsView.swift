@@ -186,7 +186,8 @@ struct SettingsView: View {
         isTesting = true
         testResult = nil
         do {
-            _ = try await api.status()
+            // Use /health for fast connection test — /status can take 20+ seconds
+            _ = try await api.health()
             testResult = true
         } catch {
             testResult = false

@@ -8,7 +8,7 @@ struct HomeView: View {
     @State private var digestRaw: String = ""
     @State private var newsArticles: [NewsArticle] = []
     @State private var spark: Spark? = nil
-    @State private var dailyFact: String? = nil
+    @State private var dailyFact: DailyFact? = nil
     @State private var dailyVocab: VocabWord? = nil
     @State private var isLoading = true
     @State private var isRefreshingDigest = false
@@ -135,7 +135,7 @@ struct HomeView: View {
     @ViewBuilder
     private var dailyCards: some View {
         if let fact = dailyFact {
-            DailyFactCard(fact: fact)
+            DailyFactCard(fact: fact.text, source: fact.source)
         }
         if let vocab = dailyVocab {
             DailyVocabCard(vocab: vocab)
@@ -157,7 +157,11 @@ struct HomeView: View {
         }
 
         if let articles = news?.articles {
-            newsArticles = Array(articles.filter { $0.image != nil }.prefix(8))
+            // Filter out articles with nil or empty image strings, then take first 8
+            newsArticles = Array(articles.filter {
+                if let img = $0.image { return !img.isEmpty }
+                return false
+            }.prefix(8))
         }
 
         spark = sparks?.sparks.first
@@ -364,6 +368,7 @@ struct DigestSection: View {
 
 struct DailyFactCard: View {
     let fact: String
+    let source: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -377,6 +382,13 @@ struct DailyFactCard: View {
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .lineSpacing(3)
+
+            if let src = source, !src.isEmpty {
+                Text(src)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -401,6 +413,7 @@ struct DailyVocabCard: View {
                     Text(vocab.word ?? "")
                         .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(.primary)
+                    // part_of_speech is optional — only shown if server provides it
                     if let pos = vocab.part_of_speech {
                         Text(pos)
                             .font(.system(size: 11))
@@ -408,6 +421,7 @@ struct DailyVocabCard: View {
                             .foregroundStyle(.tertiary)
                     }
                 }
+                // pronunciation is optional — only shown if server provides it
                 if let pron = vocab.pronunciation {
                     Text(pron)
                         .font(.system(size: 11))
@@ -422,7 +436,14 @@ struct DailyVocabCard: View {
                     .lineSpacing(2)
             }
 
-            if let etym = vocab.etymology {
+            // context replaces etymology — server returns this field
+            if let ctx = vocab.context {
+                Text(ctx)
+                    .font(.system(size: 11))
+                    .italic()
+                    .foregroundStyle(.tertiary)
+                    .lineSpacing(2)
+            } else if let etym = vocab.etymology {
                 Text(etym)
                     .font(.system(size: 11))
                     .italic()
@@ -430,6 +451,7 @@ struct DailyVocabCard: View {
                     .lineSpacing(2)
             }
 
+            // example is optional — only shown if server provides it
             if let ex = vocab.example {
                 Text("\u{201C}\(ex)\u{201D}")
                     .font(.system(size: 11.5))
@@ -441,6 +463,13 @@ struct DailyVocabCard: View {
                             .fill(Color(UIColor.separator))
                             .frame(width: 2)
                     }
+            }
+
+            if let src = vocab.source, !src.isEmpty {
+                Text(src)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
             }
         }
         .padding(14)
