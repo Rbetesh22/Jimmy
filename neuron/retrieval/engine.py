@@ -1,6 +1,7 @@
 import os
 import random
 import httpx
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from ..storage.store import NeuronStore
 from ..config import CHROMA_DIR
 
@@ -40,29 +41,29 @@ SOURCE_ICONS = {
 # Personal written notes rank highest; passive consumption lowest.
 # Canvas is authoritative for course content but sits below personal notes.
 SOURCE_WEIGHTS: dict[str, float] = {
-    "apple_notes":   1.45,   # personal notes — highest signal
+    "voice_memo":    1.50,   # personal spoken notes — highest signal (you said it out loud)
+    "granola":       1.50,   # personal meeting notes — highest signal
+    "apple_notes":   1.45,   # personal notes — very high signal
     "note":          1.45,
-    "voice_memo":    1.40,   # personal spoken notes — high signal
-    "granola":       1.40,   # personal meeting notes
-    "notion":        1.35,   # personal workspace notes
-    "calendar":      1.35,   # Google Calendar — actual commitments and events
-    "gmail":         1.30,   # sent mail and starred threads
-    "gdrive":        1.30,   # docs you've written
-    "kindle":        1.25,   # deliberate reading (highlighted)
-    "readwise":      1.25,
-    "canvas":        1.20,   # course material (required + optional mixed)
-    "file":          1.15,   # manually ingested file
+    "notion":        1.40,   # curated personal workspace
+    "canvas":        1.35,   # authoritative course material
+    "file":          1.20,   # manually ingested file — deliberate capture
+    "gdrive":        1.20,   # docs you've written
+    "kindle":        1.20,   # deliberate reading (highlighted)
+    "readwise":      1.20,
     "github":        1.10,
     "photos":        1.10,   # personal memory
-    "videos":        1.05,
     "folder":        1.08,
+    "videos":        1.05,
     "pocket":        1.05,   # saved-for-later
-    "web":           0.90,
+    "calendar":      1.00,   # context only — past events not very useful
+    "web":           1.00,   # intentionally captured web content
+    "gmail":         0.90,   # often boilerplate; noise filter handles the worst
     "youtube":       0.85,
     "youtube_liked": 0.85,
-    "spotify":       0.80,
     "podcast":       0.80,
     "twitter":       0.75,
+    "spotify":       0.60,   # song lyrics aren't study material
     "instagram":     0.65,
     "tiktok":        0.60,
 }
@@ -88,6 +89,145 @@ def _extract_date(meta: dict) -> str:
             except ValueError:
                 pass
     return ""
+
+
+def _extract_ingest_date(meta: dict) -> str:
+    """Return the KB ingest date when available, without falling back to source dates."""
+    for key in ("ingested_at", "ingest_date", "added_at"):
+        val = meta.get(key, "")
+        if not val or not isinstance(val, str):
+            continue
+        v = val.strip()
+        if len(v) >= 10 and v[4] == "-" and v[7] == "-":
+            candidate = v[:10]
+            try:
+                yr = int(candidate[:4])
+                if 2000 <= yr <= 2035:
+                    return candidate
+            except ValueError:
+                pass
+    return ""
+
+
+def _extract_recent_activity_date(meta: dict) -> str:
+    """Best effort date for recent surfaces: prefer ingest date, then safe source-specific fallbacks."""
+    ingest_date = _extract_ingest_date(meta)
+    if ingest_date:
+        return ingest_date
+
+    source = meta.get("source", "")
+    safe_fallback_sources = {
+        "note", "apple_notes", "notion", "file", "web", "granola", "gdrive",
+        "canvas", "youtube", "readwise", "podcast", "bookmarks",
+    }
+    if source in safe_fallback_sources:
+        return _extract_date(meta)
+    return ""
+
+
+def _normalize_title(title: str) -> str:
+    import re as _re
+    if not title:
+        return ""
+    normalized = title.lower().strip()
+    normalized = _re.sub(r"\(\d{4}-\d{2}-\d{2}\)", "", normalized)
+    normalized = _re.sub(r"[^a-z0-9]+", " ", normalized)
+    return _re.sub(r"\s+", " ", normalized).strip()
+
+
+def _looks_like_schedule_query(query: str) -> bool:
+    q = query.lower()
+    schedule_terms = (
+        "schedule", "calendar", "upcoming", "today", "tomorrow", "this week",
+        "next week", "deadline", "due", "meeting", "office hours", "oh", "when is",
+        "what time", "what's on", "events", "exam date", "quiz date", "midterm date",
+    )
+    return any(term in q for term in schedule_terms)
+
+
+def _calendar_priority(title: str, calendar: str = "") -> int:
+    """Lower is better. 0-1 are worth surfacing; 3-4 are noise."""
+    text = f"{title} {calendar}".lower()
+    high_signal = (
+        "exam", "midterm", "final", "quiz", "deadline", "due", "interview",
+        "presentation", "application", "hw", "homework", "assignment",
+    )
+    academic = (
+        "operating systems", "computer networks", "financial accounting",
+        "analysis of algorithms", "algorithms", "office hours", "section",
+        "lecture", "class", "study", "review session",
+    )
+    personal = (
+        "lunch", "dinner", "reservation", "brooklyn", "engagement", "panama",
+        "birthday", "wedding", "flight", "trip", "suzanne",
+    )
+    low_signal = (
+        "gym", "open recreation", "closed", "holiday", "candle lighting",
+        "shabbat ends", "hebcal", "rangers", "knicks", "yankees", "mets",
+        "warriors", "jazz", "pacers", "phillies", "tigers", "braves", "@",
+    )
+    if any(term in text for term in high_signal):
+        return 0
+    if any(term in text for term in academic):
+        return 1
+    if any(term in text for term in personal):
+        return 2
+    if any(term in text for term in low_signal):
+        return 4
+    return 3
+
+
+def _should_hide_calendar_event(title: str, calendar: str = "") -> bool:
+    priority = _calendar_priority(title, calendar)
+    if priority >= 4:
+        return True
+    normalized = _normalize_title(title)
+    if normalized in {"closed", "gym", "computer networks", "financial accounting"}:
+        return False
+    return False
+
+
+def _should_exclude_recent_item(source: str, title: str) -> bool:
+    normalized = _normalize_title(title)
+    if source in {"notion", "apple_notes", "note"}:
+        low_signal_terms = (
+            "to do", "todo", "suggestion box", "test", "test note",
+            "feedback", "daily", "book list",
+        )
+        if any(term in normalized for term in low_signal_terms):
+            return True
+    if source == "web":
+        if any(term in normalized for term in ("earn rewards", "coupon", "promo", "sale")):
+            return True
+    if source == "gdrive" and normalized in {"untitled document drive", "untitled document"}:
+        return True
+    return False
+
+
+def _query_source_multiplier(query: str, meta: dict) -> float:
+    """Adjust ranking by query intent so schedule noise does not dominate knowledge queries."""
+    source = meta.get("source", "")
+    title = meta.get("title", "")
+    if source == "calendar":
+        priority = _calendar_priority(title, meta.get("calendar", ""))
+        if _looks_like_schedule_query(query):
+            if priority == 0:
+                return 1.25
+            if priority == 1:
+                return 1.0
+            if priority == 2:
+                return 0.85
+            return 0.35
+        if priority == 0:
+            return 0.45
+        if priority == 1:
+            return 0.18
+        return 0.05
+    if source == "gmail" and not _looks_like_schedule_query(query):
+        return 0.55
+    if source in {"spotify", "twitter", "instagram", "tiktok"} and not _looks_like_schedule_query(query):
+        return 0.7
+    return 1.0
 
 
 def _recency_weight(meta: dict) -> float:
@@ -147,42 +287,94 @@ def _rerank_scored(
 
 
 def _knowledge_level(meta: dict) -> str:
-    """Return a short tag describing how well the user likely knows this content."""
+    """Return a short tag describing how well the user likely knows this content.
+
+    Tiers (most to least active engagement):
+      WROTE THIS        — user authored it (personal notes, voice memos)
+      BUILT THIS        — user coded/implemented it (github)
+      ATTENDED          — user was in the meeting (granola)
+      EDITED IN NOTION  — user actively curated this
+      COURSE MATERIAL   — in their curriculum; may or may not have read in depth
+      SAVED / UNREAD    — bookmarked, liked, or queued but may not have engaged with
+      FADED             — older material, familiarity likely low
+    """
     from datetime import date as _date, timedelta
     today = _date.today().isoformat()
     source = meta.get("source", "")
 
-    # Future Canvas assignments/modules = not yet covered in class
+    # Future Canvas items = not yet in class
     for future_key in ("due_at", "unlock_at", "unlock_date", "available_from"):
         val = meta.get(future_key, "")
         if val and isinstance(val, str) and len(val) >= 10 and val[:10] > today:
             return "NOT YET COVERED IN COURSE"
 
+    # User actively created / built
     if source in ("github",):
-        return "BUILT THIS (hands-on mastery)"
-
+        return "BUILT THIS — deep familiarity"
     if source in ("note", "apple_notes", "voice_memo"):
-        return "PERSONAL NOTE (own thinking)"
-
+        return "WROTE THIS — personal thinking"
+    if source in ("notion",):
+        return "EDITED IN NOTION — personal curation"
     if source in ("granola",):
-        return "MEETING YOU ATTENDED"
+        return "ATTENDED THIS MEETING"
 
+    # Passive saves — bookmarked/queued but engagement unknown
+    if source in ("url", "pocket", "youtube", "youtube_liked", "spotify", "readwise"):
+        status = meta.get("status", "")
+        if status in ("unread", "saved", ""):
+            return "SAVED — may not have read/watched in depth"
+        return "SAVED / PARTIALLY ENGAGED"
+
+    # Canvas: course material — varies widely in engagement
+    if source == "canvas":
+        date_str = _extract_date(meta)
+        six_months_ago = (_date.today() - timedelta(days=180)).isoformat()
+        if date_str and date_str >= six_months_ago:
+            return "COURSE MATERIAL — currently in curriculum"
+        return "COURSE MATERIAL — from a past course"
+
+    # Everything else: classify by recency
     date_str = _extract_date(meta)
     if not date_str:
         return ""
-
     six_months_ago = (_date.today() - timedelta(days=180)).isoformat()
     two_years_ago  = (_date.today() - timedelta(days=730)).isoformat()
-
     if date_str >= six_months_ago:
-        if source == "canvas":
-            return "ACTIVELY STUDYING"
         return "RECENTLY ENGAGED"
-
     if date_str >= two_years_ago:
-        return "STUDIED PREVIOUSLY (may have faded)"
+        return "STUDIED PREVIOUSLY — may have faded"
+    return "OLDER MATERIAL — likely faded"
 
-    return "OLDER MATERIAL (likely faded)"
+
+def _word_overlap_ratio(a: str, b: str) -> float:
+    """Return fraction of words in the shorter string that also appear in the longer one."""
+    wa = set(a.lower().split())
+    wb = set(b.lower().split())
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / min(len(wa), len(wb))
+
+
+def _dedup_by_content(
+    items: list[tuple],  # (score, doc, meta, id)
+    threshold: float = 0.80,
+) -> list[tuple]:
+    """Remove near-duplicate chunks: if two chunks share > threshold word overlap, keep the longer one."""
+    kept: list[tuple] = []
+    for item in items:
+        doc = item[1]
+        duplicate = False
+        for i, existing in enumerate(kept):
+            existing_doc = existing[1]
+            if _word_overlap_ratio(doc, existing_doc) > threshold:
+                # Keep the longer chunk (more information)
+                if len(doc) > len(existing_doc):
+                    kept[i] = item
+                duplicate = True
+                break
+        if not duplicate:
+            kept.append(item)
+    return kept
 
 
 def _build_numbered_context(docs: list[str], metas: list[dict]) -> tuple[str, list[dict]]:
@@ -251,11 +443,14 @@ class NeuronEngine:
         self._openai_client = None
 
     def _hybrid_search(
-        self, query: str, n_candidates: int = 200
+        self, query: str, n_candidates: int = 200, shuffle_factor: float = 0.0
     ) -> list[tuple[float, str, dict, str]]:
         """Combine vector + BM25 via Reciprocal Rank Fusion, then apply source/recency weights.
 
         Returns (composite_score, doc, meta, id) sorted best-first.
+
+        shuffle_factor: 0.0 = pure score ranking; >0 injects random perturbation to surface
+        buried content. E.g. 0.2 adds ±20% noise to each score.
         """
         n_candidates = min(n_candidates, self.store.count() or 1)
 
@@ -302,9 +497,83 @@ class NeuronEngine:
             doc, meta = lookup[doc_id]
             sw = SOURCE_WEIGHTS.get(meta.get("source", ""), 1.0)
             rw = _recency_weight(meta)
-            scored.append((rrf_score * sw * rw, doc, meta, doc_id))
+            qw = _query_source_multiplier(query, meta)
+            final_score = rrf_score * sw * rw * qw
+            # Serendipity: inject random perturbation so buried gems can surface
+            if shuffle_factor > 0.0:
+                final_score = final_score * (1.0 + random.uniform(-shuffle_factor, shuffle_factor))
+            scored.append((final_score, doc, meta, doc_id))
         scored.sort(key=lambda x: x[0], reverse=True)
         return scored
+
+    def _web_search(self, query: str, n_results: int = 3) -> str:
+        """Search DuckDuckGo and fetch top results via Jina reader. Returns plain text context."""
+        try:
+            import re as _re
+            # DuckDuckGo HTML search — no API key needed
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+            }
+            with httpx.Client(timeout=8, follow_redirects=True) as client:
+                resp = client.get(
+                    "https://html.duckduckgo.com/html/",
+                    params={"q": query, "kl": "us-en"},
+                    headers=headers,
+                )
+                # Parse result URLs from DDG HTML
+                urls = _re.findall(
+                    r'<a[^>]+class="result__url"[^>]*>([^<]+)</a>',
+                    resp.text
+                )
+                # Also try the uddg param links
+                uddg_links = _re.findall(r'uddg=([^&"]+)', resp.text)
+                from urllib.parse import unquote
+                parsed_urls = [unquote(u) for u in uddg_links if u.startswith("http")]
+                final_urls = [u.strip() for u in parsed_urls if "duckduckgo" not in u]
+
+            if not final_urls:
+                return ""
+
+            # Filter out low-quality domains and rank by query word overlap in URL path
+            LOW_QUALITY_DOMAINS = {"reddit.com", "quora.com", "pinterest.com"}
+            query_words = set(query.lower().split())
+
+            def _url_score(url: str) -> float:
+                import re as _re2
+                for bad in LOW_QUALITY_DOMAINS:
+                    if bad in url:
+                        return -1.0  # discard
+                path_words = set(_re2.findall(r'[a-z]{3,}', url.lower()))
+                overlap = len(query_words & path_words) / max(len(query_words), 1)
+                return overlap
+
+            scored_urls = [(u, _url_score(u)) for u in final_urls]
+            scored_urls = [(u, s) for u, s in scored_urls if s >= 0]
+            scored_urls.sort(key=lambda x: -x[1])
+            final_urls = [u for u, _ in scored_urls[:3]]  # hard cap at top 3
+
+            if not final_urls:
+                return ""
+
+            # Fetch each URL via Jina reader for clean text
+            snippets = []
+            with httpx.Client(timeout=10, follow_redirects=True) as client:
+                for url in final_urls:
+                    try:
+                        r = client.get(
+                            f"https://r.jina.ai/{url}",
+                            headers={"Accept": "text/plain", "User-Agent": "Neuron/1.0"},
+                        )
+                        if r.status_code == 200:
+                            text = r.text[:1200].strip()
+                            if text:
+                                snippets.append(f"WEB SOURCE: {url}\n{text}")
+                    except Exception:
+                        continue
+            return "\n\n---\n\n".join(snippets)
+        except Exception:
+            return ""
 
     def _chat(self, prompt: str, max_tokens: int = 2048, model: str = "claude-sonnet-4-6") -> str:
         # Read keys fresh each call so .env changes take effect without restart
@@ -357,6 +626,33 @@ class NeuronEngine:
         )
         return response.choices[0].message.content
 
+    def _should_skip_query_expansion(self, question: str) -> bool:
+        """Return True when query expansion adds no value and only costs latency.
+
+        Skip when:
+        - The query is short (< 6 words): short queries are already precise.
+        - The query contains specific proper nouns / technical terms / quoted phrases:
+          these are best matched literally and expansion often dilutes relevance.
+        """
+        import re
+        words = question.split()
+        # Too short — already specific
+        if len(words) < 6:
+            return True
+        # Contains a quoted phrase — user wants exact matching
+        if '"' in question or "'" in question:
+            return True
+        # Contains a proper noun (title-case word that isn't sentence-start)
+        tokens = re.findall(r'\b[A-Z][a-z]{2,}\b', question)
+        # More than one title-case token (beyond first word) → specific enough
+        non_first = [t for t in tokens if question.index(t) > 0]
+        if len(non_first) >= 2:
+            return True
+        # Contains year or date
+        if re.search(r'\b(19|20)\d{2}\b', question):
+            return True
+        return False
+
     def _expand_query(self, question: str) -> list[str]:
         """Generate 3 alternative search angles for a question via a fast LLM call.
 
@@ -364,13 +660,17 @@ class NeuronEngine:
         Uses claude-haiku for speed — this runs before every search.
         """
         import json, re
-        # Skip LLM for short/simple queries — not worth the latency
-        if len(question.split()) <= 3 or len(question) < 20:
+        # Skip LLM for short/simple queries — not worth the latency (~500ms saved)
+        if self._should_skip_query_expansion(question):
             return [question]
         raw = self._chat(
-            f"Generate 3 concise search queries to find ALL relevant information for this question "
-            f"in a personal knowledge base (notes, emails, calendar, Canvas LMS, meetings, etc.).\n"
-            f"Cover different angles: terminology variations, related entities, source-specific language.\n"
+            f"Generate 3 semantically different reformulations of this question for searching a personal knowledge base "
+            f"(notes, emails, calendar, Canvas LMS, meetings, etc.).\n"
+            f"Each reformulation must approach the question from a DIFFERENT semantic angle — "
+            f"vary the terminology, perspective, and framing so they surface different relevant documents.\n"
+            f"Reformulation 1: rephrase using domain-specific terminology or synonyms.\n"
+            f"Reformulation 2: focus on related entities, people, or context (not the direct question).\n"
+            f"Reformulation 3: reframe as what source material would say (e.g. a lecture note, meeting summary, or highlight).\n"
             f"Question: {question}\n"
             f"Output ONLY a JSON array of 3 strings, nothing else.",
             max_tokens=200,
@@ -393,6 +693,60 @@ class NeuronEngine:
                 if doc_id not in best or score > best[doc_id][0]:
                     best[doc_id] = (score, doc, meta, doc_id)
         return sorted(best.values(), key=lambda x: x[0], reverse=True)
+
+    def get_upcoming_exams(self, days: int = 14) -> list[dict]:
+        """Return upcoming exam events from calendar within the next N days.
+
+        Returns list of dicts: {title, date, days_until, topic_guess}
+        Sorted by date ascending (soonest first).
+        """
+        from datetime import date as _date
+        today = _date.today().isoformat()
+        EXAM_KEYWORDS = {"exam", "midterm", "final", "quiz", "test"}
+        seen_exam_keys: set[tuple[str, str]] = set()
+        try:
+            upcoming_data = self.upcoming(days=days)
+        except Exception:
+            return []
+        results = []
+        for event in upcoming_data.get("events", []):
+            title = event.get("title", "")
+            normalized_title = _normalize_title(title)
+            if "study for" in normalized_title or "review" in normalized_title:
+                continue
+            if any(kw in normalized_title for kw in EXAM_KEYWORDS):
+                event_date = event.get("date", "")
+                dedup_key = (event_date, normalized_title)
+                if dedup_key in seen_exam_keys:
+                    continue
+                seen_exam_keys.add(dedup_key)
+                try:
+                    days_until = (_date.fromisoformat(event_date) - _date.today()).days
+                except Exception:
+                    days_until = 0
+                # Guess study topic from exam title
+                tl = normalized_title
+                if "os" in tl or "operating" in tl:
+                    topic = "operating systems"
+                elif "network" in tl:
+                    topic = "computer networks"
+                elif "algorithm" in tl or "algo" in tl:
+                    topic = "algorithms"
+                elif "account" in tl:
+                    topic = "financial accounting"
+                else:
+                    import re as _re
+                    clean = _re.sub(r'[^\w\s]', '', title)
+                    clean = _re.sub(r'\b(exam|midterm|final|quiz|test|study|for)\b', '', clean, flags=_re.IGNORECASE)
+                    topic = clean.strip() or title
+                results.append({
+                    "title": title,
+                    "date": event_date,
+                    "days_until": days_until,
+                    "topic_guess": topic,
+                })
+        results.sort(key=lambda x: x["date"])
+        return results
 
     def _upcoming_summary(self, days: int = 14) -> str:
         """Return a compact upcoming calendar summary for injecting into ask() context.
@@ -418,7 +772,7 @@ class NeuronEngine:
             )
         except Exception:
             return ""
-        seen: set[str] = set()
+        seen: list[tuple[str, str]] = []
         events: list[tuple[str, str, int]] = []  # (date, title, priority)
         IMPORTANT_KEYWORDS = {"exam", "midterm", "final", "quiz", "test", "due", "deadline", "interview", "meeting", "presentation"}
         for meta in (all_data.get("metadatas") or []):
@@ -426,19 +780,23 @@ class NeuronEngine:
             if not date_str or date_str < today or date_str > cutoff:
                 continue
             title = meta.get("title", "")
-            key = f"{date_str}::{title}"
-            if key in seen:
+            calendar = meta.get("calendar", "")
+            if _should_hide_calendar_event(title, calendar):
                 continue
-            seen.add(key)
+            normalized = _normalize_title(title)
+            if any(existing_date == date_str and _word_overlap_ratio(normalized, existing_title) >= 0.8 for existing_date, existing_title in seen):
+                continue
+            seen.append((date_str, normalized))
             # Priority: 0 = high (exams/deadlines), 1 = normal
-            priority = 0 if any(kw in title.lower() for kw in IMPORTANT_KEYWORDS) else 1
+            priority = 0 if any(kw in title.lower() for kw in IMPORTANT_KEYWORDS) else _calendar_priority(title, calendar)
             events.append((date_str, title, priority))
         # Sort by date, then by priority (important first within same date)
         events.sort(key=lambda x: (x[0], x[2]))
-        # Keep up to 80: all high-priority + fill with normal up to cap
+        # Keep the summary compact and useful.
         high = [(d, t) for d, t, p in events if p == 0]
-        normal = [(d, t) for d, t, p in events if p == 1]
-        events_final = high[:60] + normal[:20]
+        academic = [(d, t) for d, t, p in events if p == 1]
+        personal = [(d, t) for d, t, p in events if p == 2]
+        events_final = high[:20] + academic[:12] + personal[:6]
         events_final.sort()  # re-sort by date
         if not events_final:
             return ""
@@ -457,15 +815,15 @@ class NeuronEngine:
             lines.append(f"    - {title}")
         return "\n".join(lines)
 
-    def ask(self, question: str, n_results: int = 25) -> dict:
+    def ask(self, question: str, n_results: int = 15) -> dict:
         from datetime import datetime
         _now = datetime.now()
         today = _now.strftime("%A, %B ") + str(_now.day) + _now.strftime(", %Y")
 
         queries = self._expand_query(question)
-        scored = self._multi_search(queries, n_candidates=200)
+        scored = self._multi_search(queries, n_candidates=100)
 
-        # Dedup across all sources by title to avoid the same chunk appearing twice
+        # Dedup by title (fast, eliminates exact same-document chunks)
         seen_title_keys: set[str] = set()
         deduped: list[tuple] = []
         for item in scored:
@@ -477,6 +835,9 @@ class NeuronEngine:
                 continue
             seen_title_keys.add(key)
             deduped.append(item)
+
+        # Content-similarity dedup: remove near-duplicate chunks (>80% word overlap)
+        deduped = _dedup_by_content(deduped, threshold=0.80)
 
         scored = deduped[:n_results]
 
@@ -493,27 +854,73 @@ class NeuronEngine:
         upcoming_block = self._upcoming_summary(days=14)
         upcoming_section = f"\n\n{upcoming_block}" if upcoming_block else ""
 
+        # Build a compact "Sources:" line for the end of the response
+        source_names = ", ".join(
+            s["title"] or s["source"]
+            for s in sources[:10]
+            if s.get("title") or s.get("source")
+        )
+
+        # Classify whether context is dominated by passive sources
+        passive_sources = {"url", "pocket", "youtube", "youtube_liked", "spotify", "readwise", "canvas"}
+        active_sources = {"note", "apple_notes", "voice_memo", "notion", "github", "granola"}
+        n_passive = sum(1 for m in metas if m.get("source", "") in passive_sources)
+        n_active  = sum(1 for m in metas if m.get("source", "") in active_sources)
+        mostly_passive = n_passive > n_active and n_passive >= 3
+
+        # If the question looks like an explanation request and context is mostly passive,
+        # supplement with a web search so Neuron can actually teach
+        web_context = ""
+        learning_keywords = ("explain", "how does", "what is", "teach me", "help me understand",
+                              "why does", "tell me about", "learn", "what are", "how do",
+                              "more about", "yes", "sure", "go ahead", "understand")
+        is_learning = any(kw in question.lower() for kw in learning_keywords)
+        has_passive_sources = (n_passive / max(len(metas), 1)) > 0.5
+        seems_like_learning = is_learning or has_passive_sources
+        if mostly_passive or (seems_like_learning and n_active == 0):
+            web_context = self._web_search(question)
+
+        web_section = f"\n\nWEB SEARCH RESULTS — top 3 external sources (each labeled WEB SOURCE: with URL). Use to explain/teach; always attribute as 'From the web:':\n{web_context}" if web_context else ""
+
         answer = self._chat(
-            f"You are Neuron — a second brain built from this person's actual notes, meetings, courses, and work.\n"
+            f"You are Neuron — a second brain built from Ralph's actual notes, meetings, courses, and work.\n"
+            f"Ralph is a Columbia CS student. His current courses include Operating Systems, Computer Networks, Algorithms, and Financial Accounting.\n"
             f"Today is {today}.{upcoming_section}\n\n"
-            f"KNOWLEDGE CALIBRATION — each source is tagged with the person's likely familiarity:\n"
-            f"- ⚠ NOT YET COVERED IN COURSE: in their curriculum but not taught yet. Flag it — don't assume they know it.\n"
-            f"- ⚠ ACTIVELY STUDYING: current coursework, may still have gaps.\n"
-            f"- ⚠ BUILT THIS (hands-on mastery): they coded or built this — deep familiarity, be technical.\n"
-            f"- ⚠ PERSONAL NOTE: their own thinking — treat as their stated understanding.\n"
-            f"- ⚠ STUDIED PREVIOUSLY (may have faded): remind them of key details.\n"
-            f"- ⚠ OLDER MATERIAL (likely faded): jog their memory, don't assume fluency.\n\n"
+            f"CRITICAL LANGUAGE RULES — follow these EXACTLY based on source label:\n\n"
+            f"- If a source is labeled 'WROTE THIS' or 'BUILT THIS' or 'EDITED IN NOTION' or 'ATTENDED THIS MEETING' — "
+            f"reference it as something he knows well: 'In your notes on X...', 'you wrote that...', 'in your meeting with...'\n"
+            f"- If a source is labeled 'COURSE MATERIAL' — NEVER assume he absorbed it deeply. Teach it to him: "
+            f"'Your [course name] material explains X as...' or 'There's a reading in your OS course that covers Y...' "
+            f"Then offer: 'Want me to go deeper on this?'\n"
+            f"- If a source is labeled 'SAVED' or is marked UNREAD/SAVED — "
+            f"NEVER say 'you know' or 'you read'. Say: 'You saved a [article/video/paper] called [title] that covers X...' "
+            f"Offer: 'Want me to walk you through the key ideas?'\n"
+            f"- If a source is labeled 'STUDIED PREVIOUSLY' or 'OLDER MATERIAL' — "
+            f"assume partial recall. Say 'you studied this before — it covered...', 'you may remember from your notes...'\n"
+            f"- WEB SEARCH RESULTS: label clearly as 'From the web:' before any web-sourced info.\n\n"
+            f"NEVER say 'based on your knowledge base' or 'in your second brain' — be specific about the actual source.\n"
+            f"NEVER say 'As an AI...' or mention being an AI.\n\n"
+            f"CITATIONS: Use [1], [2], [3] markers inline when referencing a specific source so the UI can hyperlink them.\n\n"
+            f"RESPONSE FORMAT:\n"
+            f"- Lead with the direct answer in 1-2 sentences — no preamble.\n"
+            f"- Use **bold** for key terms and concepts.\n"
+            f"- Prefer 3-4 tight paragraphs over 10 bullet points. Only use bullets for genuinely list-like content (steps, lists of algorithms, etc.).\n"
+            f"- Use code blocks (```language) for any code, pseudocode, or command syntax.\n"
+            f"- Cite sources inline with [N] markers when referencing specific content.\n"
+            f"- For exam-related questions: add a 'Key takeaway:' line at the end with the one thing to remember.\n"
+            f"- Use short ## headers only if the answer spans genuinely distinct sub-topics.\n"
+            f"- End your response with exactly this line:\n"
+            f"  Sources: {source_names}\n\n"
             f"STRICT RULES:\n"
-            f"- Answer ONLY from what is explicitly stated in the sources. Do not infer or fill gaps.\n"
-            f"- If the sources don't contain enough to answer, say exactly that.\n"
-            f"- Quote or closely paraphrase actual content — cite every claim inline like [1][2].\n"
-            f"- Name specific people, projects, dates, and decisions from the sources.\n"
-            f"- Sources marked UNREAD/SAVED: say 'you've saved' not 'you read/watched'.\n"
-            f"- Do not pad the answer — stop when the sources run out of relevant information.\n"
-            f"- NEVER infer habits, routines, or frequency from individual data points.\n\n"
-            f"SOURCES:\n{context}\n\n"
+            f"- NEVER say 'as you know' or 'you know that' for course/saved sources — he may not know it.\n"
+            f"- NEVER assume a Canvas reading was read in depth unless his own notes reference it.\n"
+            f"- If sources are thin, say so and lean on web search results to teach.\n"
+            f"- Write in second person ('you', 'your') — conversational, direct, like a smart TA.\n"
+            f"- NEVER infer habits or routines from individual data points.\n"
+            f"- For OS/Networks/Algorithms/Accounting questions: be precise and technical — this is exam prep.\n\n"
+            f"SOURCES:\n{context}{web_section}\n\n"
             f"QUESTION: {question}",
-            max_tokens=4000,
+            max_tokens=2048,
         )
         return {"answer": answer, "sources": sources, "question": question}
 
@@ -541,21 +948,61 @@ class NeuronEngine:
         return {"context_pack": pack, "sources": sources, "topic": topic}
 
     def resurface(self, topic: str, n_results: int = 20) -> dict:
+        from datetime import date as _date, timedelta as _td
         queries = self._expand_query(topic)
-        scored = self._multi_search(queries, n_candidates=200)[:n_results]
-        docs  = [x[1] for x in scored]
-        metas = [x[2] for x in scored]
+
+        # Run hybrid search with serendipity — 15% shuffle to avoid always returning the same items
+        scored_all = []
+        for q in queries:
+            for item in self._hybrid_search(q, n_candidates=200, shuffle_factor=0.15):
+                scored_all.append(item)
+
+        # Merge by best score per doc
+        best: dict[str, tuple] = {}
+        for item in scored_all:
+            doc_id = item[3]
+            if doc_id not in best or item[0] > best[doc_id][0]:
+                best[doc_id] = item
+        scored = sorted(best.values(), key=lambda x: x[0], reverse=True)
+
+        # Prefer content from 6+ months ago — invert recency so forgotten things surface
+        six_months_ago = (_date.today() - _td(days=180)).isoformat()
+        old_items = [x for x in scored if _extract_date(x[2]) and _extract_date(x[2]) <= six_months_ago]
+        recent_items = [x for x in scored if x not in old_items]
+
+        # Build final pool: up to 60% old content, rest recent — then cap at n_results
+        n_old = min(len(old_items), max(1, int(n_results * 0.6)))
+        n_recent = n_results - n_old
+        # Random sample from old items so we don't always get the same ones
+        sampled_old = random.sample(old_items, min(n_old, len(old_items)))
+        final = sampled_old + recent_items[:n_recent]
+        # Re-sort by score for coherent presentation
+        final.sort(key=lambda x: x[0], reverse=True)
+        final = final[:n_results]
+
+        docs  = [x[1] for x in final]
+        metas = [x[2] for x in final]
 
         if not docs:
             return {"result": f"Nothing found related to '{topic}'.", "sources": [], "topic": topic}
 
         context, sources = _build_numbered_context(docs, metas)
         result = self._chat(
-            f"You are Neuron. The person is thinking about \"{topic}\". "
-            f"Surface past insights from their notes they may have forgotten.\n\n"
-            f"Be specific — quote things directly, reference actual projects/conversations/dates [N]. "
-            f"Highlight the most surprising or actionable things. "
-            f"Show connections across sources — what patterns emerge?\n\n"
+            f"You are Neuron — Ralph's second brain.\n\n"
+            f"He's thinking about \"{topic}\". Surface the most useful, forgotten, and surprising things "
+            f"from his notes that connect to this. Prioritize things from 6+ months ago that he may have forgotten.\n\n"
+            f"FORMAT:\n"
+            f"- Start with the single most relevant thing he noted — quote or closely paraphrase it, name the source and date.\n"
+            f"- Then surface 2-4 additional pieces he may have forgotten: prior notes, meetings, highlights, or observations. "
+            f"For each, say roughly when it was and what it connects to.\n"
+            f"- End with one provocative question that this resurfaced material raises for him right now.\n\n"
+            f"RULES:\n"
+            f"- Write in second person: 'You noted this...', 'Three months ago you wrote...', 'Your meeting with X covered...'\n"
+            f"- Be specific — names, dates, direct quotes from the sources\n"
+            f"- For items not accessed in 30+ days, frame as: 'You noted this X months ago — still relevant?'\n"
+            f"- For items from 6+ months ago, open with: 'Hey, remember when you learned/wrote/noted this?'\n"
+            f"- Show patterns across sources: what keeps recurring?\n"
+            f"- Do not invent — only surface what is explicitly in the sources\n\n"
             f"SOURCES:\n{context}",
             max_tokens=2000,
         )
@@ -613,47 +1060,151 @@ class NeuronEngine:
             "business strategy product market",
             "artificial intelligence machine learning",
         ]
-        best: dict[str, tuple] = {}
-        for query in seed_queries:
-            for score, doc, meta, doc_id in self._hybrid_search(query, n_candidates=80):
-                if doc_id not in best or score > best[doc_id][0]:
-                    best[doc_id] = (score, doc, meta, doc_id)
+        # Run all seed queries in parallel — use vector-only search to avoid BM25 rebuild hang
+        def _vec_search(query: str, n: int = 80):
+            """Vector-only search for digest — avoids BM25 rebuild blocking thread pool."""
+            try:
+                res = self.store.search(query, n_results=n)
+                out = []
+                for doc_id, dist, doc, meta in zip(
+                    res["ids"][0], res["distances"][0],
+                    res["documents"][0], res["metadatas"][0]
+                ):
+                    score = max(0.0, 1.0 - dist)
+                    out.append((score, doc, meta, doc_id))
+                return out
+            except Exception:
+                return []
 
-        sorted_items = sorted(best.values(), key=lambda x: x[0], reverse=True)[:sample_size]
+        best: dict[str, tuple] = {}
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {
+                pool.submit(_vec_search, q, 80): q
+                for q in seed_queries
+            }
+            for future in as_completed(futures):
+                try:
+                    for score, doc, meta, doc_id in future.result():
+                        if doc_id not in best or score > best[doc_id][0]:
+                            best[doc_id] = (score, doc, meta, doc_id)
+                except Exception:
+                    pass
+
+        # Exclude calendar and low-signal sources from digest — they pollute the briefing
+        # NOTE: filter is applied BEFORE any sorting or processing so excluded sources
+        # can never appear in context even if they ranked highly.
+        import re as _re_digest
+        DIGEST_EXCLUDE_SOURCES = {"calendar", "gmail", "google_calendar", "apple_calendar"}
+        DIGEST_EXCLUDE_TITLE_PATTERNS = [
+            r'\b(exam|midterm|final|quiz|office hours|lecture)\b.*\d{1,2}:\d{2}',
+            r'\d{1,2}:\d{2}\s*(am|pm)',
+            r'\b(due|deadline)\b.*\d{1,2}/\d{1,2}',
+        ]
+
+        def _digest_should_exclude(title: str, source: str) -> bool:
+            if source.lower() in DIGEST_EXCLUDE_SOURCES:
+                return True
+            for pat in DIGEST_EXCLUDE_TITLE_PATTERNS:
+                if _re_digest.search(pat, title, _re_digest.IGNORECASE):
+                    return True
+            return False
+
+        filtered = [
+            item for item in best.values()
+            if not _digest_should_exclude(
+                item[2].get("title", ""),
+                item[2].get("source", "").lower().strip(),
+            )
+        ]
+        sorted_items = sorted(filtered, key=lambda x: x[0] * _recency_weight(x[2]), reverse=True)[:sample_size]
         all_docs  = [x[1] for x in sorted_items]
         all_metas = [x[2] for x in sorted_items]
 
         context, sources = _build_numbered_context(all_docs, all_metas)
 
-        result = self._chat(
-            f"You are Neuron, a learning assistant and second brain. Today is {today}.\n\n"
-            f"Below are excerpts from the user's knowledge base — things they've read, highlighted, saved, "
-            f"and studied. Your job is to surface what's intellectually alive in their library right now.\n\n"
-            f"Write a daily learning briefing grounded entirely in the sources below. "
-            f"Every claim must cite a source [N]. Do not invent anything not in the sources.\n\n"
-            f"## What You're Studying\n"
-            f"2–3 sentences identifying the main topics or ideas the user is actively engaging with, "
-            f"based on what's in their library. Name actual books, articles, courses, or concepts [N].\n\n"
+        raw = self._chat(
+            f"You are Neuron — Ralph's second brain and learning partner. Today is {today}.\n"
+            f"Ralph is a Columbia CS student. His intellectual world spans: OS/Networks/Algorithms coursework, Torah & Jewish thought, Israel/geopolitics, AI & startups, finance, and personal projects.\n\n"
+            f"Below are excerpts from his knowledge base — things he has read, highlighted, saved, and studied.\n\n"
+            f"Write a morning briefing that feels like a message from a brilliant friend who has read everything in his library and noticed something he hasn't. "
+            f"Open with the single most interesting, non-obvious thing — not a summary, but an insight. Never start with a greeting.\n\n"
+            f"## What You're In Right Now\n"
+            f"2–3 sentences on the ideas Ralph is most actively wrestling with. "
+            f"Name actual titles, courses, or concepts from the sources — never vague categories. "
+            f"'You've been working through [specific concept] in your OS notes' or 'Your highlights from [title] keep returning to X' — specific, not generic.\n\n"
             f"## Ideas Worth Sitting With\n"
-            f"2–3 specific ideas, arguments, or questions from the sources that deserve attention today. "
-            f"Quote or paraphrase directly [N]. Focus on what's intellectually interesting, not administrative.\n\n"
-            f"## Connections\n"
-            f"Identify 1–2 non-obvious links between different things in the knowledge base. "
-            f"Format: '[Concept/source A] and [concept/source B] both grapple with X, because...' [N].\n\n"
-            f"## One Thread to Pull\n"
-            f"Name exactly ONE concept, thinker, or open question from the sources that is worth going deeper on today. "
-            f"Be specific about why now [N].\n\n"
-            f"Rules:\n"
-            f"- Under 400 words total\n"
-            f"- No scheduling, no life admin, no generic encouragement\n"
-            f"- Never paste event titles, email subjects, or calendar entries verbatim — they are context only\n"
-            f"- Never use bullet lists (- or *) — write in natural prose paragraphs\n"
-            f"- No source citations like [1] or [N] — just write naturally\n"
-            f"- Write like a brilliant study partner who has read everything in the library\n\n"
+            f"2–3 specific arguments, questions, or passages from the sources that deserve attention today. "
+            f"Quote or closely paraphrase the actual text from the sources. Make each one feel like it was written for him right now.\n\n"
+            f"## A Connection You Might Have Missed\n"
+            f"One non-obvious link between two things in his library from DIFFERENT domains. "
+            f"The best version sounds like: 'Your [source A] and [source B] are both making the same argument about X — specifically [why].' "
+            f"Avoid connecting two CS topics or two things from the same course.\n\n"
+            f"## One Thread to Pull Today\n"
+            f"Name exactly ONE specific question, concept, or thinker worth going deeper on today. "
+            f"Make it feel timely — why is this the right moment, given what's in the library?\n\n"
+            f"ABSOLUTE RULES — NEVER VIOLATE:\n"
+            f"- NEVER mention calendar events, exam dates, assignment deadlines, or scheduled meetings by name\n"
+            f"- NEVER use bullet points with '•' — use markdown '- ' instead\n"
+            f"- NEVER include raw URLs in the output\n"
+            f"- Keep each section to 2-3 sentences maximum\n"
+            f"- NO email subject lines or email content of any kind\n"
+            f"- NO emojis whatsoever — not a single character\n"
+            f"- NO phrases like 'Based on your knowledge base' or 'According to your notes'\n"
+            f"- Write in clean prose paragraphs\n"
+            f"- Sound like a thoughtful, brilliant friend — not an assistant\n\n"
+            f"STRICT RULES:\n"
+            f"- Under 420 words total\n"
+            f"- Open with the most interesting item — never with a greeting or preamble\n"
+            f"- Write in second person throughout: 'You read...', 'Your notes on X...'\n"
+            f"- NO inline citations like [1] — reference sources by name in prose\n"
+            f"- Grounded entirely in the sources below — do not invent\n\n"
             f"KNOWLEDGE SOURCES:\n{context}",
-            max_tokens=1400,
+            max_tokens=1500,
         )
-        return {"result": result, "sources": sources, "topic": "digest"}
+        # Post-processing: aggressive cleanup of the raw LLM output
+        import re as _re
+        text = raw.strip()
+        text = _re.sub(r'\r\n', '\n', text)
+        text = _re.sub(r'\n{3,}', '\n\n', text)
+        # Strip emojis
+        emoji_pattern = _re.compile(
+            u'[\U0001F300-\U0001FAFF\U00002702-\U000027B0\u2600-\u26FF\uFE00-\uFE0F\uFFFD]+',
+            _re.UNICODE
+        )
+        text = emoji_pattern.sub('', text)
+        # Broaden emoji strip: cover emoticons and supplemental ranges
+        emoji_pattern2 = _re.compile(
+            "["
+            "\U0001F600-\U0001F64F"
+            "\U0001F300-\U0001F5FF"
+            "\U0001F680-\U0001F6FF"
+            "\U0001F1E0-\U0001F1FF"
+            "\U00002700-\U000027BF"
+            "\U0001F900-\U0001F9FF"
+            "\U00002600-\U000026FF"
+            "\u2640-\u2642"
+            "\u2600-\u2B55"
+            "\u200d"
+            "\u23cf"
+            "\u23e9"
+            "\u231a"
+            "\ufe0f"
+            "]+",
+            flags=_re.UNICODE
+        )
+        text = emoji_pattern2.sub('', text)
+        # Remove lines containing calendar-like patterns that slipped through
+        lines = text.split('\n')
+        lines = [l for l in lines if not _re.search(
+            r'\b(exam|quiz|deadline|assignment|due|meeting|lecture|class|office hours)\b',
+            l, _re.IGNORECASE
+        )]
+        # Collapse multiple blank lines
+        text = _re.sub(r'\n{3,}', '\n\n', '\n'.join(lines))
+        # Remove trailing whitespace from each line
+        text = '\n'.join(l.rstrip() for l in text.split('\n'))
+        text = text.strip()
+        return {"result": text, "sources": sources, "topic": "digest"}
 
     def daily_extras(self) -> dict:
         """Generate a personalized fun fact and vocabulary word from the knowledge base."""
@@ -674,28 +1225,39 @@ class NeuronEngine:
             "scientific finding experiment result",
             "philosophical thought experiment argument",
         ]
-        best_fact: dict = {}
-        for q in fact_queries:
-            for score, doc, meta, doc_id in self._hybrid_search(q, n_candidates=40):
-                if doc_id not in best_fact or score > best_fact[doc_id][0]:
-                    best_fact[doc_id] = (score, doc, meta, doc_id)
-        fact_items = sorted(best_fact.values(), key=lambda x: x[0], reverse=True)[:20]
-        fact_docs = [x[1] for x in fact_items]
-        fact_context = "\n\n".join(f"[{i+1}] {d[:400]}" for i, d in enumerate(fact_docs))
-
-        # Sample for vocabulary — look for domain-specific terminology
-        vocab_queries = [
+        # Run all fact and vocab queries in parallel
+        all_queries = fact_queries + [
             "term definition concept theory principle",
             "named after called known as referred to",
             "technical jargon discipline field domain",
             "Greek Latin root derived from means",
             "phenomenon effect law theorem conjecture",
         ]
+        vocab_queries_set = set(all_queries[len(fact_queries):])
+
+        best_fact: dict = {}
         best_vocab: dict = {}
-        for q in vocab_queries:
-            for score, doc, meta, doc_id in self._hybrid_search(q, n_candidates=40):
-                if doc_id not in best_vocab or score > best_vocab[doc_id][0]:
-                    best_vocab[doc_id] = (score, doc, meta, doc_id)
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {
+                pool.submit(self._hybrid_search, q, 40): q
+                for q in all_queries
+            }
+            for future in as_completed(futures):
+                q = futures[future]
+                try:
+                    results = future.result()
+                    target = best_vocab if q in vocab_queries_set else best_fact
+                    for score, doc, meta, doc_id in results:
+                        if doc_id not in target or score > target[doc_id][0]:
+                            target[doc_id] = (score, doc, meta, doc_id)
+                except Exception:
+                    pass
+
+        fact_items = sorted(best_fact.values(), key=lambda x: x[0], reverse=True)[:20]
+        fact_docs = [x[1] for x in fact_items]
+        fact_context = "\n\n".join(f"[{i+1}] {d[:400]}" for i, d in enumerate(fact_docs))
+
         vocab_items = sorted(best_vocab.values(), key=lambda x: x[0], reverse=True)[:20]
         vocab_docs = [x[1] for x in vocab_items]
         vocab_context = "\n\n".join(f"[{i+1}] {d[:400]}" for i, d in enumerate(vocab_docs))
@@ -999,11 +1561,70 @@ class NeuronEngine:
         summary = self._chat(prompt, max_tokens=1200, model="claude-sonnet-4-6")
         return {"summary": summary, "sources": source_cards}
 
-    def practice(self, topic: str, n_results: int = 20) -> dict:
-        """Generate mixed practice exercises from the user's actual notes and courses on a topic."""
+    def practice(self, topic: str, n_results: int = 20, difficulty: str = "medium") -> dict:
+        """Generate mixed practice exercises from the user's actual notes and courses on a topic.
+
+        Prioritizes Canvas course materials for academic topics. Injects upcoming exam context
+        so questions feel like real exam prep when exams are near.
+        """
         import json, re
+        from datetime import date as _date
+        today = _date.today().isoformat()
+
+        # --- Prioritize course material sources for academic topics ---
+        # Run multiple targeted searches to get diverse, relevant content
+        ACADEMIC_TOPICS = {
+            "operating systems", "os", "computer networks", "networks", "networking",
+            "algorithms", "algorithm", "data structures", "financial accounting",
+            "accounting", "distributed systems", "computer science",
+        }
+        topic_lower = topic.lower()
+        is_academic = any(t in topic_lower for t in ACADEMIC_TOPICS)
+
+        # Current course codes for Spring 2026
+        CURRENT_COURSE_CODES = {
+            "coms4118", "4118",         # OS
+            "csee4119", "4119",         # Networks
+            "csor4231", "4231",         # Algorithms
+            "busigu4013", "4013",       # Financial Accounting
+        }
+        CURRENT_COURSE_KEYWORDS = {
+            "operating system", "os midterm", "coms4118",
+            "computer network", "networks midterm", "csee4119",
+            "algorithms", "csor4231",
+            "financial accounting", "accounting midterm", "busigu4013",
+        }
+
         queries = self._expand_query(topic)
-        scored = self._multi_search(queries, n_candidates=200)[:n_results]
+        scored_all = self._multi_search(queries, n_candidates=300)
+
+        # Separate course/note material from other sources
+        course_sources = {"canvas", "note", "apple_notes", "notion", "file", "gdrive"}
+        course_scored = [x for x in scored_all if x[2].get("source") in course_sources]
+        other_scored = [x for x in scored_all if x[2].get("source") not in course_sources]
+
+        # For academic topics: heavily prefer current course material
+        if is_academic and course_scored:
+            # Prioritize canvas chunks from current courses by boosting their scores
+            def _is_current_course(meta: dict) -> bool:
+                title = (meta.get("title") or "").lower()
+                course = (meta.get("course") or "").lower()
+                combined = title + " " + course
+                return any(code in combined for code in CURRENT_COURSE_CODES) or \
+                       any(kw in combined for kw in CURRENT_COURSE_KEYWORDS)
+
+            current_course_scored = [x for x in course_scored if _is_current_course(x[2])]
+            other_course_scored = [x for x in course_scored if not _is_current_course(x[2])]
+
+            if current_course_scored:
+                # Heavily prioritize current course material: up to 12 from current + 4 other + 4 misc
+                scored = (current_course_scored[:12] + other_course_scored[:4] + other_scored[:4])[:n_results]
+            else:
+                # Fall back to all course material
+                scored = (course_scored[:15] + other_scored[:5])[:n_results]
+        else:
+            scored = scored_all[:n_results]
+
         docs  = [x[1] for x in scored]
         metas = [x[2] for x in scored]
 
@@ -1012,27 +1633,76 @@ class NeuronEngine:
                     "message": f"Nothing found about '{topic}' in your knowledge base. Try ingesting some courses or notes on this topic first."}
 
         context, sources = _build_numbered_context(docs, metas)
-        from datetime import date as _date
-        today = _date.today().isoformat()
+
+        # --- Inject upcoming exam awareness ---
+        exam_context = ""
+        try:
+            upcoming_block = self._upcoming_summary(days=7)
+            if upcoming_block:
+                EXAM_KWS = {"exam", "midterm", "final", "quiz", "test"}
+                if any(kw in upcoming_block.lower() for kw in EXAM_KWS):
+                    exam_context = f"\n\nURGENT CONTEXT:\n{upcoming_block}\nGenerate questions that would appear on these exams."
+        except Exception:
+            pass
+
+        # --- Build difficulty-specific instructions ---
+        if difficulty == "easy":
+            diff_note = "Focus on definitions, core concepts, and basic mechanisms. Questions should build confidence."
+            mix_note = (
+                "3 MULTIPLE CHOICE (definitions, basic facts) + "
+                "2 CONCEPT (explain a term or mechanism) + "
+                "1 APPLICATION (simple scenario)"
+            )
+        elif difficulty == "hard":
+            diff_note = "Focus on edge cases, tradeoffs, algorithm correctness, and synthesis across topics. Exam-level difficulty."
+            mix_note = (
+                "2 MULTIPLE CHOICE (tricky edge cases, common exam traps) + "
+                "2 APPLICATION (complex scenarios requiring judgment) + "
+                "1 SYNTHESIS (connect two concepts or compare two approaches) + "
+                "1 hard CONCEPT or CODING challenge"
+            )
+        else:  # medium (default)
+            diff_note = "Mix of core concepts and application. Should feel like a real exam warm-up."
+            mix_note = (
+                "2 MULTIPLE CHOICE (one easy definition, one tricky application) + "
+                "1 CONCEPT (explain a mechanism in depth) + "
+                "2 APPLICATION (concrete scenario) + "
+                "1 SYNTHESIS (connect two ideas from the sources)"
+            )
 
         raw = self._chat(
-            f'You are Neuron, a personal tutor. Today is {today}. The person wants to practice "{topic}".\n\n'
-            f'Based ONLY on their actual knowledge base below, generate 5 practice exercises that test what they have actually studied.\n\n'
-            f'EXERCISE MIX:\n'
-            f'- 2 concept questions (recall/explain a specific thing from their notes)\n'
-            f'- 2 application questions (apply knowledge to a new scenario)\n'
-            f'- 1 coding challenge (if the topic involves programming — otherwise make it a third concept question)\n\n'
-            f'REQUIREMENTS:\n'
-            f'- Reference specific titles, course names, professor names, or highlights from the sources\n'
-            f'- Start easy, end hard\n'
-            f'- For coding questions: include starter code or a clear specification\n'
-            f'- The answer field must be a complete, correct answer they can learn from\n'
-            f'- explanation must be 2-4 sentences tying back to their actual notes\n\n'
-            f'Return ONLY valid JSON (no markdown):\n'
-            f'[{{"type":"concept|application|coding","question":"...","difficulty":"easy|medium|hard",'
-            f'"answer":"...","explanation":"...","source_hint":"From your [exact title/source]..."}}]\n\n'
-            f'SOURCES:\n{context}',
-            max_tokens=3000,
+            f'You are Neuron — Ralph\'s personal Columbia exam tutor. Today is {today}.{exam_context}\n\n'
+            f'Ralph is preparing for "{topic}" at difficulty: {difficulty.upper()}.\n'
+            f'{diff_note}\n\n'
+            f'Based ONLY on his actual course materials and notes below, generate exactly 6 exam-quality exercises.\n\n'
+            f'INTERLEAVING RULE: Mix topic types — do NOT ask 3 questions about the same sub-concept in a row. '
+            f'Alternate between different aspects of {topic} (e.g., OS: scheduling → memory → synchronization → file systems → scheduling again). '
+            f'Research shows interleaving improves retention vs blocked practice.\n\n'
+            f'DESIRABLE DIFFICULTY: Make questions one level harder than the student thinks they need. '
+            f'The goal is productive struggle, not easy wins.\n\n'
+            f'EXERCISE MIX:\n{mix_note}\n\n'
+            f'WHAT MAKES A GOOD QUESTION HERE:\n'
+            f'- For OS: focus on process states, virtual memory (page tables, TLB, demand paging), scheduling algorithms (Round Robin, SJF, MLFQ), synchronization (mutex, semaphore, monitors, deadlock conditions), file systems (inodes, journaling)\n'
+            f'- For Networks: focus on TCP vs UDP tradeoffs, congestion control (AIMD, slow start), DNS resolution, HTTP/HTTPS, routing protocols (BGP, OSPF), the 4-layer model and what happens at each layer\n'
+            f'- For Algorithms: focus on dynamic programming recurrences, NP-completeness reductions, greedy correctness proofs, graph algorithms (Dijkstra, Bellman-Ford, MST), amortized analysis\n'
+            f'- For Accounting: focus on journal entries, T-accounts, balance sheet equation, revenue recognition, matching principle, depreciation methods\n\n'
+            f'REQUIREMENTS FOR ALL QUESTIONS:\n'
+            f'- Draw from SPECIFIC content in the sources — name the actual algorithm, concept, or principle\n'
+            f'- Questions test understanding of mechanisms and tradeoffs, not just definitions\n'
+            f'- "answer": complete and educational — something worth reading even if you knew the answer\n'
+            f'- "explanation": 2-4 sentences teaching the concept, referencing the specific source material. Include the "why."\n'
+            f'- "source_hint": "From your [specific title] in [Canvas/notes/etc.]"\n\n'
+            f'FOR MULTIPLE CHOICE questions:\n'
+            f'  "question": "stem\\nA) option1\\nB) option2\\nC) option3\\nD) option4"\n'
+            f'  "answer": "B) [full correct answer text]"\n'
+            f'  "options": ["A) option1","B) option2","C) option3","D) option4"]\n'
+            f'  Distractors must be plausible — use real misconceptions from this topic (e.g. confusing mutex with semaphore, or TCP with UDP guarantees).\n\n'
+            f'Return ONLY valid JSON array (no markdown fences, no trailing comma):\n'
+            f'[{{"type":"multiple_choice|concept|application|synthesis|coding",'
+            f'"question":"...","difficulty":"easy|medium|hard","answer":"...",'
+            f'"explanation":"...","source_hint":"...","options":null_or_array_of_4_strings}}]\n\n'
+            f'SOURCES (prioritizing course materials):\n{context}',
+            max_tokens=4000,
         )
         m = re.search(r'\[[\s\S]*\]', raw)
         exercises = []
@@ -1041,24 +1711,56 @@ class NeuronEngine:
                 exercises = [e for e in json.loads(m.group(0)) if isinstance(e, dict)]
             except Exception:
                 pass
-        return {"exercises": exercises, "topic": topic, "sources": sources}
+        # Ensure options field exists on all exercises
+        for ex in exercises:
+            if "options" not in ex:
+                ex["options"] = None
+        return {"exercises": exercises, "topic": topic, "sources": sources, "difficulty": difficulty}
 
     def evaluate_answer(self, question: str, user_answer: str, correct_answer: str,
                         explanation: str, topic: str) -> dict:
-        """Evaluate a user's practice answer and give personalized feedback."""
+        """Evaluate a user's practice answer and give specific, gap-identifying feedback."""
+        # Detect MCQ: correct answer starts with A/B/C/D)
+        import re as _re
+        is_mcq = bool(_re.match(r'^[A-D]\)', correct_answer.strip()))
+        if is_mcq:
+            # For MCQ, grade by exact option match — no LLM needed
+            user_letter = user_answer.strip()[:2].upper()
+            correct_letter = correct_answer.strip()[:2].upper()
+            is_correct = user_letter == correct_letter or user_answer.strip().upper() == correct_answer.strip().upper()
+            score = "correct" if is_correct else "incorrect"
+            feedback = (
+                f"Correct! {explanation}" if is_correct
+                else f"The correct answer was {correct_answer}. {explanation}"
+            )
+            return {
+                "score": score,
+                "feedback": feedback,
+                "key_gap": None if is_correct else f"Review: {explanation}",
+                "follow_up": None,
+            }
+
         result = self._chat(
-            f'The person is practicing "{topic}".\n\n'
+            f'You are a rigorous but encouraging tutor grading a practice answer on "{topic}".\n\n'
             f'QUESTION: {question}\n\n'
             f'THEIR ANSWER: {user_answer}\n\n'
             f'CORRECT ANSWER: {correct_answer}\n\n'
             f'EXPLANATION: {explanation}\n\n'
-            f'Give feedback in this exact JSON format (no markdown):\n'
+            f'Grade strictly on correctness — not effort or length.\n\n'
+            f'SCORING RUBRIC:\n'
+            f'- "correct": all key concepts are present and accurate\n'
+            f'- "partial": the core idea is right but a significant detail, mechanism, or nuance is wrong or missing\n'
+            f'- "incorrect": the answer is wrong, confused, or misses the main point entirely\n\n'
+            f'Give feedback in this exact JSON format (no markdown fences):\n'
             f'{{"score":"correct|partial|incorrect",'
-            f'"feedback":"2-3 sentences — be encouraging, specific about what was right/wrong",'
-            f'"key_gap":"1 sentence on the main thing they missed (null if correct)",'
-            f'"follow_up":"1 related question to deepen understanding"}}\n\n'
-            f'Be encouraging but honest. If partially correct, celebrate what they got right.',
-            max_tokens=500,
+            f'"feedback":"2-3 sentences — acknowledge what was right, then pinpoint the specific error or gap. '
+            f'Quote or reference the correct answer directly. Name the exact concept or mechanism they misunderstood.",'
+            f'"key_gap":"Name the precise concept, definition, or reasoning step they are missing — be specific enough '
+            f'that they know exactly what to review. For example: \'You conflated X with Y — X means... whereas Y means...\'. '
+            f'Set to null only if score is correct.",'
+            f'"follow_up":"A targeted follow-up question that directly tests the gap you identified, not a generic deepening question"}}\n\n'
+            f'Do not be vague. "Missing detail" is not useful — name the detail.',
+            max_tokens=600,
             model="claude-haiku-4-5-20251001",
         )
         import json, re
@@ -1078,12 +1780,25 @@ class NeuronEngine:
         today = _date.today().isoformat()
         cutoff_recent = (_date.today() - timedelta(days=days_recent)).isoformat()
         cutoff_old    = (_date.today() - timedelta(days=days_old)).isoformat()
-        SPARK_EXCLUDE = {"calendar"}
+        SPARK_EXCLUDE = {"calendar", "gmail", "google_calendar"}
         # High-signal sources: prefer content user actively studied/read/wrote
         HIGH_SIGNAL_SOURCES = {
             "canvas", "apple_notes", "note", "granola", "kindle", "readwise",
             "notion", "pocket", "youtube", "podcast", "file", "gdrive",
+            "github", "twitter",
         }
+        # Diversity seed queries: ensure spark searches span all domains, not just recent CS/tech
+        SPARK_DIVERSITY_SEEDS = [
+            "Torah parasha weekly learning Jewish wisdom halacha",
+            "Israel news geopolitics Middle East current events",
+            "startup founder entrepreneurship business idea",
+            "philosophy ethics meaning life wisdom",
+            "music art culture creativity",
+            "health fitness wellness habit",
+            "book reading insight quote highlight",
+            "history economics politics society culture",
+            "sports fitness health personal experience",
+        ]
 
         def _domain_key(meta: dict) -> str:
             """Group by source + course so same-course chunks cluster together."""
@@ -1120,9 +1835,32 @@ class NeuronEngine:
                 old_domain_by_id[doc_id] = key
 
         if not recent_by_domain:
-            return {"sparks": [], "message": f"No content found from the last {days_recent} days. Try syncing sources or ingesting something new."}
+            # Fallback: widen the window — treat anything without a date or within 90 days as "recent"
+            _wider_cutoff = (_date.today() - timedelta(days=90)).isoformat()
+            for meta, doc_id in zip(all_meta["metadatas"], all_meta["ids"]):
+                if meta.get("source") in SPARK_EXCLUDE:
+                    continue
+                date_str = _extract_date(meta)
+                key = _domain_key(meta)
+                if not date_str or date_str >= _wider_cutoff:
+                    recent_by_domain[key].append((meta, doc_id))
+            if not recent_by_domain:
+                return {"sparks": [], "message": f"No content found from the last {days_recent} days. Try syncing sources or ingesting something new."}
         if not old_domain_by_id:
-            return {"sparks": [], "message": "Not enough historical content to find connections. Keep using Neuron and check back later."}
+            # Fallback: treat older recent items as "old" for comparison
+            _older_cutoff = (_date.today() - timedelta(days=30)).isoformat()
+            for meta, doc_id in zip(all_meta["metadatas"], all_meta["ids"]):
+                if meta.get("source") in SPARK_EXCLUDE:
+                    continue
+                date_str = _extract_date(meta)
+                if date_str and date_str < _older_cutoff:
+                    key = _domain_key(meta)
+                    old_domain_by_id[doc_id] = key
+                elif not date_str:
+                    key = _domain_key(meta)
+                    old_domain_by_id[doc_id] = key
+            if not old_domain_by_id:
+                return {"sparks": [], "message": "Not enough historical content to find connections. Keep using Neuron and check back later."}
 
         # Sort domains: prefer high-signal sources first, then shuffle within priority tiers
         def _domain_priority(domain_key: str) -> int:
@@ -1150,18 +1888,52 @@ class NeuronEngine:
 
         # Fetch actual documents only for the selected recent items
         selected_recent_ids = [doc_id for _, doc_id in recent_metas_ids]
-        try:
-            recent_docs_result = self.store.collection.get(
-                ids=selected_recent_ids, include=["documents", "metadatas"]
-            )
-        except Exception:
-            return {"sparks": [], "message": "Could not fetch recent documents."}
-
-        recent_sample = list(zip(
-            recent_docs_result["documents"],
-            recent_docs_result["metadatas"],
-            recent_docs_result["ids"],
-        ))
+        recent_sample = []
+        if selected_recent_ids:
+            try:
+                recent_docs_result = self.store.collection.get(
+                    ids=selected_recent_ids, include=["documents", "metadatas"]
+                )
+                recent_sample = list(zip(
+                    recent_docs_result["documents"],
+                    recent_docs_result["metadatas"],
+                    recent_docs_result["ids"],
+                ))
+            except Exception:
+                # Fallback: use semantic search to get recent-like content instead of by-ID fetch
+                try:
+                    fb_res = self.store.search(
+                        "operating systems networks algorithms accounting recent study",
+                        n_results=min(16, len(selected_recent_ids) + 8)
+                    )
+                    seen_fb: set[str] = set()
+                    for fb_doc, fb_meta, fb_id in zip(
+                        fb_res["documents"][0], fb_res["metadatas"][0], fb_res["ids"][0]
+                    ):
+                        if fb_id not in seen_fb and fb_meta.get("source") not in SPARK_EXCLUDE:
+                            seen_fb.add(fb_id)
+                            recent_sample.append((fb_doc, fb_meta, fb_id))
+                except Exception:
+                    pass
+        if not recent_sample:
+            # Last-resort fallback: pull any random chunks from high-signal sources
+            try:
+                any_res = self.store.collection.get(
+                    include=["documents", "metadatas"],
+                    limit=50,
+                )
+                import random as _rand_spark
+                paired_any = list(zip(any_res["documents"], any_res["metadatas"], any_res["ids"]))
+                _rand_spark.shuffle(paired_any)
+                for fb_doc, fb_meta, fb_id in paired_any:
+                    if fb_meta.get("source") not in SPARK_EXCLUDE:
+                        recent_sample.append((fb_doc, fb_meta, fb_id))
+                    if len(recent_sample) >= 16:
+                        break
+            except Exception:
+                pass
+        if not recent_sample:
+            return {"sparks": [], "message": "Could not fetch documents for spark. Try syncing sources."}
 
         # Extract abstract principles from recent content — searching with raw text
         # finds same-topic content; abstract principles find cross-domain connections.
@@ -1197,11 +1969,20 @@ class NeuronEngine:
                 for i, (d, m, _) in enumerate(recent_sample[:6])
             ]
 
-        # Search old KB with abstract queries — finds cross-domain matches
+        # Append diversity seeds — always search for Torah/Israel/philosophy/etc. to prevent
+        # sparks from skewing entirely toward CS/technical topics when those dominate recent activity
+        diversity_theme_extras = [
+            {"theme": seed, "query": seed, "item_idx": 1}
+            for seed in SPARK_DIVERSITY_SEEDS
+        ]
+        themes = themes + diversity_theme_extras
+
+        # Search old KB with abstract queries in parallel — each query is independent
         candidate_pairs: list[tuple] = []
         seen_old_domains: set[str] = set()
 
-        for theme_obj in themes[:8]:
+        def _search_theme(theme_obj: dict) -> tuple | None:
+            """Search old KB for one theme; return best cross-domain pair or None."""
             idx = min(max(int(theme_obj.get("item_idx", 1)) - 1, 0), len(recent_sample) - 1)
             r_doc, r_meta, r_id = recent_sample[idx]
             r_domain = _domain_key(r_meta)
@@ -1210,8 +1991,7 @@ class NeuronEngine:
             try:
                 results = self.store.search(search_query, n_results=40)
             except Exception:
-                continue
-
+                return None
             for cand_id, cand_doc, cand_meta in zip(
                 results["ids"][0], results["documents"][0], results["metadatas"][0]
             ):
@@ -1225,11 +2005,23 @@ class NeuronEngine:
                 cand_course = cand_meta.get("course_name", cand_meta.get("course_code", ""))
                 if r_course and cand_course and r_course == cand_course:
                     continue
+                return (r_doc, r_meta, cand_doc, cand_meta, theme_obj.get("theme", ""), cand_domain)
+            return None
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            theme_futures = {
+                pool.submit(_search_theme, t): t
+                for t in themes[:8]
+            }
+            for future in as_completed(theme_futures):
+                result = future.result()
+                if result is None:
+                    continue
+                r_doc, r_meta, cand_doc, cand_meta, theme, cand_domain = result
                 if cand_domain in seen_old_domains:
                     continue
                 seen_old_domains.add(cand_domain)
-                candidate_pairs.append((r_doc, r_meta, cand_doc, cand_meta, theme_obj.get("theme", "")))
-                break
+                candidate_pairs.append((r_doc, r_meta, cand_doc, cand_meta, theme))
 
         if not candidate_pairs:
             return {"sparks": [], "message": "No cross-domain connections found yet. Keep building your knowledge base."}
@@ -1242,40 +2034,74 @@ class NeuronEngine:
             loc = f"{src} / {course}" if course else src
             return f"[{tag} · {date} · {loc}]"
 
+        def _engagement(meta: dict) -> str:
+            """Short label for how actively Ralph engaged with this content."""
+            src = meta.get("source", "")
+            if src in ("note", "apple_notes", "voice_memo"):
+                return "YOU WROTE:"
+            if src == "notion":
+                return "YOU EDITED:"
+            if src == "github":
+                return "YOU BUILT:"
+            if src == "granola":
+                return "YOU ATTENDED:"
+            if src == "canvas":
+                return "COURSE MATERIAL:"
+            if src in ("url", "pocket", "youtube", "youtube_liked", "spotify", "readwise", "gdrive"):
+                return "YOU SAVED:"
+            return "YOU SAVED:"
+
         pairs_ctx = "\n\n".join(
             f"PAIR {i+1}:\n"
             f"  ABSTRACT THEME: {theme or '(semantic match)'}\n"
-            f"  RECENT {_label(r_m, 'RECENT')}\n"
+            f"  RECENT {_label(r_m, 'RECENT')} | ENGAGEMENT: {_engagement(r_m)}\n"
             f"  Title: {r_m.get('title', '')}\n"
             f"  \"{r_d[:350]}\"\n\n"
-            f"  PAST   {_label(o_m, 'PAST')}\n"
+            f"  PAST   {_label(o_m, 'PAST')} | ENGAGEMENT: {_engagement(o_m)}\n"
             f"  Title: {o_m.get('title', '')}\n"
             f"  \"{o_d[:350]}\""
             for i, (r_d, r_m, o_d, o_m, theme) in enumerate(candidate_pairs)
         )
 
         raw = self._chat(
-            f"You are Neuron — a second brain that reveals surprising intellectual connections across someone's knowledge.\n"
-            f"Today is {today}. Ralph is a Columbia student interested in Israel/Middle East, Torah, AI/startups, and finance.\n\n"
-            f"These pairs were matched on an ABSTRACT PRINCIPLE — your job: articulate the specific non-obvious insight.\n\n"
-            f"WHAT MAKES A GREAT SPARK:\n"
-            f"- Specific to the actual content — quote concepts, names, titles from the text\n"
-            f"- Feels like an 'aha!' — something he genuinely wouldn't have noticed\n"
-            f"- Good: 'The CAP theorem trade-offs from Networks explains why blockchain consensus is impossible to scale — same mathematical constraint'\n"
-            f"- Bad: 'Both deal with complexity' or 'These topics overlap in interesting ways'\n"
-            f"- Actionable: how does knowing this connection help him right now?\n\n"
-            f"STRICT RULES:\n"
-            f"- If a pair's connection is weak or generic — OMIT IT ENTIRELY\n"
-            f"- recent_item: 1 sentence on what he's studying NOW (quote specific concepts)\n"
-            f"- past_item: 1 sentence on what he learned BEFORE (name the source, course, or date)\n"
-            f"- connection: 2-3 sentences of genuine insight using specific terms from BOTH texts\n"
-            f"- why_it_matters: one concrete payoff for exams, work, or understanding — not generic\n"
-            f"- title: 5-8 words naming the actual topics connected\n\n"
-            f"Return ONLY valid JSON (2-4 great sparks beats 8 weak ones):\n"
-            f'[{{"title":"...","recent_item":"...","past_item":"...",'
-            f'"connection":"...","why_it_matters":"...","icon":"single emoji"}}]\n\n'
+            f"You are finding surprising, delightful connections between things in Ralph's life.\n"
+            f"Today is {today}. Ralph is a Columbia CS student. His world spans: Torah & Jewish thought, Israel/Middle East geopolitics, AI & startups, finance, Operating Systems, Computer Networks, Algorithms, Distributed Systems, history, sports, and personal experiences.\n\n"
+            f"These pairs were pre-matched on a shared abstract principle. Your job: articulate the specific, surprising insight as if you're a brilliant friend who just noticed something no one else would.\n\n"
+            f"WHAT A GREAT SPARK LOOKS LIKE:\n"
+            f"The title should make Ralph stop scrolling and think 'wait, what?' Examples of the tone:\n"
+            f"  'Turing's halting problem is basically a rabbinic she'eila'\n"
+            f"  'The IDF's distributed command structure solves the same problem as microservices'\n"
+            f"  'Chazakah is a Bayesian prior with a 2,000-year head start'\n"
+            f"  'The CAP theorem is just the trolley problem in distributed systems'\n"
+            f"  'Why exponential backoff is the same logic as Nachmanides on teshuva'\n\n"
+            f"The connection field should feel like a revelation, not a comparison. Don't say 'both X and Y deal with Z' — explain WHY the same underlying mechanic appears in both domains, and what that reveals.\n\n"
+            f"DIVERSITY RULES (strictly enforced):\n"
+            f"- The best sparks bridge DIFFERENT worlds: Torah ↔ CS, Israel news ↔ history, OS internals ↔ economics, sports strategy ↔ philosophy\n"
+            f"- REJECT any spark that connects two CS concepts, two academic papers from the same course, or two obviously related topics\n"
+            f"- If a pair is weak, obvious, or surface-level — OMIT IT. 3 great sparks > 8 mediocre ones\n\n"
+            f"ENGAGEMENT RULES — how to reference each item:\n"
+            f"- WROTE / EDITED / BUILT / ATTENDED → Ralph knows this. Say 'In your notes on X...' or 'you wrote that...'\n"
+            f"- COURSE MATERIAL → don't assume he internalized it. Say 'Your [OS/Networks/Algo] class covered X as...' Frame as discovery.\n"
+            f"- SAVED → don't assume he read it. Say 'you saved a [article/video] called [Title] that argues Y...'\n\n"
+            f"ELABORATIVE INTERROGATION — for the connection field, always answer: WHY does this connection exist? "
+            f"What is the deep reason the same pattern appears in both domains? What does this reveal about how the world works?\n\n"
+            f"TIME SCALE MIXING — prioritize sparks that connect things from different time scales: "
+            f"something from last year (e.g. Macroeconomics, Distributed Systems) with something from this week (OS, Networks, Accounting). "
+            f"This is the most valuable kind of spark — it activates old knowledge through new context.\n\n"
+            f"ACTIONABLE INSIGHT — end the connection with: 'This means when you see X in [domain A], look for Y in [domain B]'\n\n"
+            f"STRICT FIELD RULES:\n"
+            f"- title: 5-10 words. A vivid, curious observation or question — NOT 'The Connection Between X and Y'\n"
+            f"- recent_item: 1 sentence naming the ACTUAL TITLE of the recent content with engagement-appropriate framing\n"
+            f"- past_item: 1 sentence naming the ACTUAL TITLE of the past content with engagement-appropriate framing\n"
+            f"- connection: 2-3 sentences of genuine insight. WHY does the same underlying mechanic appear in both? What does it reveal? End with the actionable insight.\n"
+            f"- why_it_matters: 1 concrete, personal sentence answering: 'Why does this connection matter for understanding BOTH domains?' For SAVED/COURSE items: end with 'Want to dig into this?'\n"
+            f"- icon: a single emoji that captures the spark's vibe\n\n"
+            f"NEVER mention 'your knowledge base', 'your notes', 'your second brain'. Be specific about actual source titles.\n\n"
+            f"Return ONLY valid JSON (no markdown):\n"
+            f'[{{"title":"...","recent_item":"...","past_item":"..."'
+            f',"connection":"...","why_it_matters":"...","icon":"single emoji"}}]\n\n'
             f"PAIRS:\n{pairs_ctx}",
-            max_tokens=3000,
+            max_tokens=3500,
             model="claude-opus-4-6",
         )
         match = re.search(r'\[[\s\S]*\]', raw)
@@ -1292,20 +2118,46 @@ class NeuronEngine:
             "total_old": len(old_domain_by_id),
         }
 
-    def timeline(self, weeks: int = 16) -> dict:
-        """Return learning activity grouped by week for visualization."""
+    def timeline(self, weeks: int = 16, days: int = 0) -> dict:
+        """Return learning activity grouped by week + flat events list for visualization.
+
+        Args:
+            weeks: Number of weeks to look back (default 16). Ignored if days > 0.
+            days:  Explicit lookback in days (overrides weeks when > 0).
+        """
         from datetime import datetime, timedelta, date as _date
         from collections import defaultdict
 
         result = self.store.collection.get(include=["metadatas", "documents"])
         if not result["metadatas"]:
-            return {"weeks": [], "heatmap": [], "total": 0}
+            return {"weeks": [], "heatmap": [], "total": 0, "events": [], "period_weeks": weeks}
 
         now = datetime.now()
-        cutoff = now - timedelta(weeks=weeks)
+        if days > 0:
+            cutoff = now - timedelta(days=days)
+            period_weeks = max(1, days // 7)
+        else:
+            cutoff = now - timedelta(weeks=weeks)
+            period_weeks = weeks
+
+        # Map source → event type for structured display
+        SOURCE_TYPE_MAP = {
+            "canvas": "class",
+            "notion": "note",
+            "apple_notes": "note",
+            "gmail": "note",
+            "github": "note",
+            "youtube": "video",
+            "goodnotes": "note",
+            "book": "book",
+            "library": "book",
+            "pocket": "note",
+            "web": "note",
+        }
 
         week_data: dict[str, dict] = {}
         day_counts: dict[str, set] = defaultdict(set)  # date → set of unique titles
+        events_by_title: dict[str, dict] = {}  # title → best event dict
 
         today_str = _date.today().isoformat()
         TIMELINE_EXCLUDE = {"calendar"}  # Calendar skews timeline with future events
@@ -1324,18 +2176,34 @@ class NeuronEngine:
             except Exception:
                 continue
 
+            src = meta.get("source", "unknown")
             title = meta.get("title", "")
+            url = meta.get("url", "")
+            event_type = SOURCE_TYPE_MAP.get(src.lower(), "note")
+
             if title:
                 day_counts[date_str[:10]].add(title)
+
+            # Build flat events list (within lookback window)
+            if dt >= cutoff and title and title not in events_by_title:
+                snippet = (doc or "").strip()
+                # Trim to a readable snippet length
+                if len(snippet) > 200:
+                    snippet = snippet[:197] + "…"
+                events_by_title[title] = {
+                    "date": date_str[:10],
+                    "title": title,
+                    "snippet": snippet,
+                    "source": src,
+                    "type": event_type,
+                    "url": url,
+                }
 
             if dt < cutoff:
                 continue
 
             # Week start = Monday
             week_start = (dt - timedelta(days=dt.weekday())).strftime("%Y-%m-%d")
-            src = meta.get("source", "unknown")
-            title = meta.get("title", "")
-            url = meta.get("url", "")
 
             if week_start not in week_data:
                 week_data[week_start] = {"sources": defaultdict(set), "titles": set(), "items": []}
@@ -1347,6 +2215,7 @@ class NeuronEngine:
                 week_data[week_start]["items"].append({
                     "title": title,
                     "source": src,
+                    "type": event_type,
                     "date": date_str[:10],
                     "url": url,
                 })
@@ -1371,11 +2240,26 @@ class NeuronEngine:
             for i in range(365)
         ]
 
+        # Flat events sorted newest-first
+        events = sorted(events_by_title.values(), key=lambda e: e["date"], reverse=True)
+
+        # Streak: count consecutive days with activity ending today
+        streak = 0
+        check_date = _date.today()
+        while True:
+            if len(day_counts.get(check_date.isoformat(), set())) > 0:
+                streak += 1
+                check_date -= timedelta(days=1)
+            else:
+                break
+
         return {
             "weeks": weeks_list,
             "heatmap": heatmap,
             "total": sum(w["total_items"] for w in weeks_list),
-            "period_weeks": weeks,
+            "period_weeks": period_weeks,
+            "events": events,
+            "streak": streak,
         }
 
     def upcoming(self, days: int = 14) -> dict:
@@ -1393,30 +2277,40 @@ class NeuronEngine:
         if not all_data["ids"]:
             return {"result": f"Nothing on your calendar in the next {days} days.", "events": [], "days": days}
 
-        seen_titles: set[str] = set()
-        events: list[dict] = []
+        seen_titles: list[tuple[str, str]] = []
+        events: list[tuple[int, dict]] = []
         for doc, meta in zip(all_data["documents"], all_data["metadatas"]):
             date_str = _extract_date(meta)
             if not date_str or date_str < today or date_str > cutoff:
                 continue
             title = meta.get("title", "Event")
-            key = f"{date_str}::{title}"
-            if key in seen_titles:
+            calendar = meta.get("calendar", "")
+            if _should_hide_calendar_event(title, calendar):
                 continue
-            seen_titles.add(key)
-            events.append({
+            normalized = _normalize_title(title)
+            if any(existing_date == date_str and _word_overlap_ratio(normalized, existing_title) >= 0.8 for existing_date, existing_title in seen_titles):
+                continue
+            seen_titles.append((date_str, normalized))
+            priority = _calendar_priority(title, calendar)
+            events.append((priority, {
                 "title": title,
                 "date": date_str,
-                "calendar": meta.get("calendar", ""),
+                "calendar": calendar,
                 "account": meta.get("account", ""),
                 "url": meta.get("url", ""),
                 "excerpt": doc[:300],
-            })
+            }))
 
-        events.sort(key=lambda x: x["date"])
+        events.sort(key=lambda x: (x[1]["date"], x[0], _normalize_title(x[1]["title"])))
 
         if not events:
             return {"result": f"Nothing on your calendar in the next {days} days.", "events": [], "days": days}
+
+        high = [event for priority, event in events if priority == 0]
+        academic = [event for priority, event in events if priority == 1]
+        personal = [event for priority, event in events if priority == 2]
+        events = high[:12] + academic[:10] + personal[:8]
+        events.sort(key=lambda x: (x["date"], _calendar_priority(x["title"], x.get("calendar", "")), _normalize_title(x["title"])))
 
         lines = []
         current_date = None
@@ -1442,13 +2336,19 @@ class NeuronEngine:
         cutoff = (_date.today() - timedelta(days=days)).isoformat()
         store = self.store
 
-        # Sources most likely to have recently-dated content
+        # Recent should mean recently added to the KB, not just old source docs with future dates.
         sources_to_scan = [
-            "calendar", "canvas", "granola", "apple_notes", "note",
-            "file", "web", "gmail", "gdrive", "spotify", "youtube",
+            "canvas", "granola", "apple_notes", "note",
+            "file", "web", "gdrive", "youtube",
             "readwise", "notion", "podcast", "bookmarks",
         ]
-
+        source_caps = {
+            "notion": 15,
+            "gdrive": 10,
+            "canvas": 10,
+            "file": 10,
+            "web": 10,
+        }
         by_source: dict[str, list[dict]] = {}
         seen_titles: set[str] = set()
 
@@ -1463,10 +2363,12 @@ class NeuronEngine:
                 continue
 
             for doc, meta in zip(result["documents"], result["metadatas"]):
-                date_str = _extract_date(meta)
+                date_str = _extract_recent_activity_date(meta)
                 if not date_str or date_str < cutoff:
                     continue
                 title = meta.get("title", "Untitled")
+                if _should_exclude_recent_item(src, title):
+                    continue
                 key = f"{title}::{src}"
                 if key in seen_titles:
                     continue
@@ -1482,6 +2384,8 @@ class NeuronEngine:
         # Sort each source's items by date descending
         for src in by_source:
             by_source[src].sort(key=lambda x: x["date"], reverse=True)
+            cap = source_caps.get(src, 8)
+            by_source[src] = by_source[src][:cap]
 
         if not by_source:
             return {"result": f"Nothing found in the last {days} days.", "by_source": {}, "days": days}
@@ -1489,3 +2393,796 @@ class NeuronEngine:
         total = sum(len(v) for v in by_source.values())
         return {"result": f"{total} items from the last {days} days.", "by_source": by_source, "days": days}
 
+    def daily(self) -> dict:
+        """Generate a personalized daily fun fact and vocab word from the knowledge base.
+
+        When exams are coming up within 7 days, biases toward course material for that subject
+        so the daily fact/vocab is relevant to current study priorities.
+        """
+        import random, json as _json
+        from datetime import date as _date
+
+        if self.store.count() == 0:
+            return {"fact": None, "vocab": None}
+
+        # --- Detect upcoming exams to bias content selection ---
+        upcoming_exam_topics: list[str] = []
+        exam_context_note = ""
+        try:
+            upcoming_block = self._upcoming_summary(days=7)
+            if upcoming_block:
+                EXAM_KWS = ["exam", "midterm", "final", "quiz", "test"]
+                lines_with_exams = [
+                    l for l in upcoming_block.split("\n")
+                    if any(kw in l.lower() for kw in EXAM_KWS)
+                ]
+                if lines_with_exams:
+                    exam_context_note = (
+                        f"\n\nIMPORTANT: Ralph has upcoming exams:\n"
+                        + "\n".join(lines_with_exams[:4])
+                        + "\n\nStrongly prefer the fact and vocab word to come from these exam subjects. "
+                        "Make them exam-prep relevant."
+                    )
+                    # Extract topic keywords from exam lines
+                    for line in lines_with_exams:
+                        line_lower = line.lower()
+                        if "os" in line_lower or "operating" in line_lower:
+                            upcoming_exam_topics.append("operating systems process thread memory scheduling")
+                        if "network" in line_lower:
+                            upcoming_exam_topics.append("computer networks TCP IP routing protocols")
+                        if "algorithm" in line_lower or "algo" in line_lower:
+                            upcoming_exam_topics.append("algorithms complexity sorting graph")
+                        if "account" in line_lower:
+                            upcoming_exam_topics.append("financial accounting balance sheet income")
+        except Exception:
+            pass
+
+        # Sample a diverse mix, biased toward exam topics if available
+        # Current semester: OS, Networks, Algorithms, Accounting
+        CURRENT_COURSE_SEEDS = [
+            "operating systems process thread memory scheduling virtual",
+            "computer networks TCP IP routing protocols packet",
+            "algorithms complexity sorting graph dynamic programming",
+            "financial accounting balance sheet income statement GAAP",
+        ]
+        VARIETY_SEEDS = [
+            "book reading highlight insight quote",
+            "personal note reflection idea observation",
+        ]
+        seed_queries = (
+            upcoming_exam_topics[:3] +  # bias toward exam topics
+            CURRENT_COURSE_SEEDS +
+            [
+                "interesting surprising counterintuitive fact",
+                "technical concept definition term explained",
+                "domain specific vocabulary jargon term",
+                "mechanism process how it works underlying",
+            ] +
+            VARIETY_SEEDS
+        )
+        seen_ids: set[str] = set()
+        docs, metas = [], []
+
+        # Date cutoffs for filtering
+        from datetime import date as _date2, timedelta as _td
+        _ninety_days_ago = (_date2.today() - _td(days=90)).isoformat()
+        _six_months_ago  = (_date2.today() - _td(days=180)).isoformat()
+
+        # Preferred sources for current-semester content
+        CURRENT_SOURCES   = {"canvas", "apple_notes", "note"}
+        VARIETY_SOURCES   = {"goodreads", "kindle", "readwise", "pocket", "spotify", "podcast"}
+        OLD_DIST_SYS_KWORDS = {"distributed", "consensus", "replication", "raft", "paxos",
+                               "fault tolerance", "go channel", "goroutine"}
+
+        def _query_one(q: str):
+            try:
+                res = self.store.search(q, n_results=8)
+                # search() returns {"ids": [[...]], "documents": [[...]], "metadatas": [[...]]}
+                return list(zip(res["documents"][0], res["metadatas"][0], res["ids"][0]))
+            except Exception:
+                return []
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = [pool.submit(_query_one, q) for q in seed_queries]
+            for future in as_completed(futures):
+                for d, m, i in future.result():
+                    if i not in seen_ids:
+                        # Filter out stale canvas chunks (older than 6 months = old semester)
+                        src = m.get("source", "")
+                        date_str = _extract_date(m)
+                        if src == "canvas" and date_str and date_str < _six_months_ago:
+                            continue
+                        # Filter out old distributed systems content (last semester)
+                        combined_text = (d + " " + m.get("title", "") + " " + m.get("course_name", "")).lower()
+                        if any(kw in combined_text for kw in OLD_DIST_SYS_KWORDS):
+                            # Allow only if from a current-semester canvas chunk (recent)
+                            if src == "canvas" and date_str and date_str >= _ninety_days_ago:
+                                pass  # keep it — current course content
+                            elif src not in CURRENT_SOURCES:
+                                continue  # skip old dist-sys content from other sources
+                        seen_ids.add(i)
+                        docs.append(d)
+                        metas.append(m)
+
+        if not docs:
+            return {"fact": None, "vocab": None}
+
+        # Sort: recent current-course content first, then variety sources, then rest
+        def _doc_priority(dm: tuple) -> int:
+            d_txt, m_obj = dm
+            src = m_obj.get("source", "")
+            date_str = _extract_date(m_obj)
+            if src in CURRENT_SOURCES:
+                if date_str and date_str >= _ninety_days_ago:
+                    return 0  # recent current-course — highest priority
+                return 1
+            if src in VARIETY_SOURCES:
+                return 2  # goodreads, podcasts, etc. for variety
+            return 3
+
+        paired = list(zip(docs, metas))
+        # If exam topics found, put course-source docs first but keep variety
+        if upcoming_exam_topics:
+            course_sources = {"canvas", "note", "apple_notes", "file"}
+            course_docs  = [x for x in paired if x[1].get("source") in course_sources]
+            variety_docs = [x for x in paired if x[1].get("source") in VARIETY_SOURCES]
+            other_docs   = [x for x in paired if x[1].get("source") not in course_sources
+                            and x[1].get("source") not in VARIETY_SOURCES]
+            # Shuffle within groups for daily variety
+            random.shuffle(course_docs)
+            random.shuffle(variety_docs)
+            random.shuffle(other_docs)
+            # Mix: mostly course, sprinkle variety
+            ordered = course_docs[:14] + variety_docs[:3] + other_docs[:3]
+        else:
+            paired.sort(key=_doc_priority)
+            # Within same priority, shuffle for daily variety
+            from itertools import groupby
+            ordered = []
+            for _, grp in groupby(paired, key=_doc_priority):
+                grp_list = list(grp)
+                random.shuffle(grp_list)
+                ordered.extend(grp_list)
+
+        docs  = [x[0] for x in ordered]
+        metas = [x[1] for x in ordered]
+
+        snippets = "\n\n".join([
+            f"[Source: {m.get('source','?')} | {m.get('title','')[:50]}]\n{d[:400]}"
+            for d, m in zip(docs[:20], metas[:20])
+        ])
+
+        from datetime import datetime as _dt
+        today = _dt.now().strftime("%A, %B %d, %Y")
+
+        prompt = f"""Today is {today}. Ralph is a Columbia CS student currently taking Operating Systems, Computer Networks, Algorithms, and Financial Accounting.{exam_context_note}
+
+Below are excerpts from his notes, courses, meetings, and research.
+
+Generate TWO things for today's daily card. Both should make him think "oh right, I need to remember that."
+
+1. FACT — A specific, surprising thing from his actual course material or notes. NOT a generic CS fact you could find on Wikipedia. Think: a counterintuitive result, a subtle mechanism, a specific algorithm property, a GAAP nuance, a networking edge case. Something that would appear on an exam and that he might have glossed over.
+   - If exams are upcoming, make this exam-prep relevant.
+   - 2-3 sentences max. Specific enough that it could be a standalone exam question.
+
+2. VOCAB WORD — A term from what he's currently studying (OS, Networks, Algorithms, or Accounting). Not a word he definitely knows — a term that's used in the course but whose precise meaning he might be fuzzy on. OR a term with a subtle distinction (e.g., thrashing vs. swapping, congestion vs. flow control, revenue vs. income).
+   - If exams are upcoming, pick something exam-relevant.
+
+EXCERPTS:
+{snippets}
+
+Respond ONLY with valid JSON (no markdown fences):
+{{
+  "fact": {{
+    "text": "The specific, surprising fact or insight — 2-3 sentences, standalone and memorable.",
+    "source": "Specific source (e.g. 'OS course — virtual memory lecture', 'Networks — TCP/IP notes')"
+  }},
+  "vocab": {{
+    "word": "The exact term",
+    "definition": "One precise, complete sentence definition — technical but clear.",
+    "context": "One sentence on why this matters or where it trips people up in his courses.",
+    "source": "Specific source"
+  }}
+}}"""
+
+        raw = self._chat(prompt, model="claude-haiku-4-5-20251001")
+        try:
+            # Strip markdown fences if model added them
+            clean = raw.strip()
+            if clean.startswith("```"):
+                clean = "\n".join(clean.split("\n")[1:])
+                clean = clean.rstrip("`").strip()
+            result = _json.loads(clean)
+            result["date"] = _date.today().isoformat()
+            return result
+        except Exception:
+            return {"fact": None, "vocab": None, "date": _date.today().isoformat()}
+
+
+    # ── LIBRARY ──────────────────────────────────────────────────────────────────
+
+    def library_list(self) -> dict:
+        """Return all books in the KB (sources: kindle, readwise, book, goodreads).
+
+        Groups chunks by book title, counts highlights and notes, extracts author,
+        last-read date, and runs a fast theme-extraction prompt over a sample.
+        """
+        import json, re
+        from datetime import date as _date
+
+        BOOK_SOURCES = {"kindle", "readwise", "book", "goodreads"}
+
+        # Fetch all metadatas without loading full documents — fast
+        try:
+            result = self.store.collection.get(include=["metadatas", "documents"])
+        except Exception:
+            return {"books": []}
+
+        # Group by canonical book key: (source, book_title or title)
+        books: dict[str, dict] = {}  # key → book dict
+        for doc_id, doc, meta in zip(result["ids"], result["documents"], result["metadatas"]):
+            src = meta.get("source", "")
+            if src not in BOOK_SOURCES:
+                continue
+
+            # Canonical title: prefer metadata "book" field, then "title"
+            raw_title = meta.get("book") or meta.get("title", "")
+            # Strip common prefixes like "Kindle: " or "Readwise: "
+            for prefix in ("Kindle: ", "Readwise: ", "Book: ", "Goodreads: "):
+                if raw_title.startswith(prefix):
+                    raw_title = raw_title[len(prefix):]
+
+            if not raw_title:
+                continue
+
+            author = meta.get("author", "")
+            date = _extract_date(meta)
+            book_type = meta.get("type", "")
+            asin = meta.get("asin", "")
+
+            # Build stable book ID from source + title
+            book_id = re.sub(r"[^a-z0-9_]", "_", f"{src}_{raw_title}".lower())[:80]
+
+            if book_id not in books:
+                books[book_id] = {
+                    "id": book_id,
+                    "title": raw_title,
+                    "author": author,
+                    "source": src,
+                    "asin": asin,
+                    "highlights_count": 0,
+                    "notes_count": 0,
+                    "last_read": date,
+                    "chunk_ids": [],
+                    "sample_text": "",
+                }
+            b = books[book_id]
+
+            # Count highlights vs. notes
+            if book_type in ("book_highlights", "highlight"):
+                b["highlights_count"] += 1
+            elif book_type in ("note", "book_note"):
+                b["notes_count"] += 1
+            else:
+                b["highlights_count"] += 1  # default: treat as highlight
+
+            # Track most recent date
+            if date and (not b["last_read"] or date > b["last_read"]):
+                b["last_read"] = date
+
+            # Update author if we now have one
+            if not b["author"] and author:
+                b["author"] = author
+            if not b["asin"] and asin:
+                b["asin"] = asin
+
+            b["chunk_ids"].append(doc_id)
+            # Collect sample text for theme extraction (cap at ~600 chars)
+            if len(b["sample_text"]) < 600:
+                b["sample_text"] += " " + doc[:200]
+
+        if not books:
+            return {"books": []}
+
+        book_list = list(books.values())
+
+        # Run AI theme extraction on all books in one call (capped at 20 books)
+        books_for_themes = sorted(book_list, key=lambda b: -(b["highlights_count"] + b["notes_count"]))[:20]
+        try:
+            theme_ctx = "\n".join(
+                f'[{i}] "{b["title"]}" by {b["author"] or "Unknown"}: {b["sample_text"][:300].strip()}'
+                for i, b in enumerate(books_for_themes)
+            )
+            raw = self._chat(
+                "For each numbered book excerpt below, extract 2-3 theme tags (single words or short phrases) "
+                "and 2-3 topic tags that connect this book to academic or real-world domains. "
+                "Return ONLY a JSON array in order, one entry per book:\n"
+                '[{"themes": ["tag1", "tag2"], "connected_topics": ["topic1", "topic2"]}]\n\n'
+                f"BOOKS:\n{theme_ctx}",
+                max_tokens=800,
+                model="claude-haiku-4-5-20251001",
+            )
+            m = re.search(r'\[[\s\S]*?\]', raw)
+            if m:
+                theme_data = json.loads(m.group(0))
+                for i, b in enumerate(books_for_themes):
+                    if i < len(theme_data) and isinstance(theme_data[i], dict):
+                        b["themes"] = theme_data[i].get("themes", [])
+                        b["connected_topics"] = theme_data[i].get("connected_topics", [])
+        except Exception:
+            pass
+
+        # Clean up internal fields before returning
+        for b in book_list:
+            b.pop("sample_text", None)
+            b.pop("chunk_ids", None)
+            b.setdefault("themes", [])
+            b.setdefault("connected_topics", [])
+
+        # Sort by highlights count descending
+        book_list.sort(key=lambda b: -(b["highlights_count"] + b["notes_count"]))
+        return {"books": book_list}
+
+    def library_book(self, book_id: str) -> dict:
+        """Deep dive into a single book: all highlights, AI summary, cross-connections."""
+        import json, re
+
+        BOOK_SOURCES = {"kindle", "readwise", "book", "goodreads"}
+
+        # Fetch all book-source chunks and filter to this book_id
+        try:
+            result = self.store.collection.get(include=["metadatas", "documents"])
+        except Exception:
+            return {"error": "Could not access knowledge base."}
+
+        docs = []
+        metas = []
+        title = ""
+        author = ""
+        source = ""
+        asin = ""
+        last_read = ""
+
+        for doc_id, doc, meta in zip(result["ids"], result["documents"], result["metadatas"]):
+            src = meta.get("source", "")
+            if src not in BOOK_SOURCES:
+                continue
+            raw_title = meta.get("book") or meta.get("title", "")
+            for prefix in ("Kindle: ", "Readwise: ", "Book: ", "Goodreads: "):
+                if raw_title.startswith(prefix):
+                    raw_title = raw_title[len(prefix):]
+            cid = re.sub(r"[^a-z0-9_]", "_", f"{src}_{raw_title}".lower())[:80]
+            if cid != book_id:
+                continue
+            docs.append(doc)
+            metas.append(meta)
+            if not title:
+                title = raw_title
+                author = meta.get("author", "")
+                source = src
+                asin = meta.get("asin", "")
+            d = _extract_date(meta)
+            if d and (not last_read or d > last_read):
+                last_read = d
+
+        if not docs:
+            return {"error": f"Book '{book_id}' not found in library."}
+
+        # Build highlights list (first 300 chars per chunk)
+        highlights = []
+        notes = []
+        for doc, meta in zip(docs, metas):
+            book_type = meta.get("type", "")
+            date = _extract_date(meta)
+            entry = {"text": doc.strip(), "date": date}
+            if book_type in ("note", "book_note"):
+                notes.append(entry)
+            else:
+                highlights.append(entry)
+
+        # Cross-connections: search other sources for overlapping ideas
+        search_q = f"{title} {author} themes ideas concepts"
+        cross_docs = []
+        cross_metas = []
+        try:
+            scored = self._hybrid_search(search_q, n_candidates=60)
+            seen_book_chunks: set[str] = set()
+            # Determine which chunk_ids belong to this book
+            for doc, meta in zip(docs, metas):
+                pass  # already have them
+            for score, cdoc, cmeta, cid in scored:
+                csrc = cmeta.get("source", "")
+                if csrc in BOOK_SOURCES:
+                    continue  # skip other books — want cross-domain hits
+                craw = cmeta.get("book") or cmeta.get("title", "")
+                cross_docs.append(cdoc)
+                cross_metas.append(cmeta)
+                if len(cross_docs) >= 8:
+                    break
+        except Exception:
+            pass
+
+        # AI: generate summary + key themes + cross-connections
+        all_text = "\n\n".join(d[:400] for d in docs[:30])
+        cross_ctx = "\n\n".join(
+            f'[{cmeta.get("source","")}] {cmeta.get("title","")}: {cdoc[:200]}'
+            for cdoc, cmeta in zip(cross_docs[:6], cross_metas[:6])
+        )
+
+        summary = ""
+        key_themes = []
+        cross_connections = []
+        related_books = []
+
+        try:
+            prompt = (
+                f'Book: "{title}" by {author or "Unknown"}\n\n'
+                f'HIGHLIGHTS ({len(docs)} chunks):\n{all_text[:3000]}\n\n'
+                f'CROSS-DOMAIN CONTEXT (from Ralph\'s notes, courses, work):\n{cross_ctx}\n\n'
+                f'Return ONLY valid JSON (no markdown):\n'
+                '{{\n'
+                '  "summary": "3-4 sentence summary of the book\'s core arguments based on the highlights",\n'
+                '  "key_themes": ["theme1", "theme2", "theme3"],\n'
+                '  "cross_connections": [\n'
+                '    {{"source_title": "...", "source_type": "...", "connection": "1 sentence"}}\n'
+                '  ],\n'
+                '  "related_queries": ["query to find related books"]\n'
+                '}}'
+            )
+            raw = self._chat(prompt, max_tokens=1000, model="claude-haiku-4-5-20251001")
+            clean = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+            parsed = json.loads(clean)
+            summary = parsed.get("summary", "")
+            key_themes = parsed.get("key_themes", [])
+            cross_connections = parsed.get("cross_connections", [])
+            # Find related books
+            rq = parsed.get("related_queries", [])
+            if rq:
+                try:
+                    rb_result = self.store.collection.get(include=["metadatas"])
+                    seen_rel: set[str] = {book_id}
+                    for rmeta in rb_result["metadatas"]:
+                        rsrc = rmeta.get("source", "")
+                        if rsrc not in BOOK_SOURCES:
+                            continue
+                        rt = rmeta.get("book") or rmeta.get("title", "")
+                        for prefix in ("Kindle: ", "Readwise: ", "Book: ", "Goodreads: "):
+                            if rt.startswith(prefix):
+                                rt = rt[len(prefix):]
+                        rid = re.sub(r"[^a-z0-9_]", "_", f"{rsrc}_{rt}".lower())[:80]
+                        if rid not in seen_rel and rt:
+                            seen_rel.add(rid)
+                            related_books.append({
+                                "id": rid,
+                                "title": rt,
+                                "author": rmeta.get("author", ""),
+                            })
+                            if len(related_books) >= 5:
+                                break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        _, source_cards = _build_numbered_context(docs[:10], metas[:10])
+
+        return {
+            "id": book_id,
+            "title": title,
+            "author": author,
+            "source": source,
+            "asin": asin,
+            "last_read": last_read,
+            "highlights_count": len(highlights),
+            "notes_count": len(notes),
+            "highlights": highlights[:50],
+            "notes": notes[:20],
+            "summary": summary,
+            "key_themes": key_themes,
+            "cross_connections": cross_connections,
+            "related_books": related_books,
+            "sources": source_cards[:8],
+        }
+
+    def library_ask(self, question: str, book_id: str | None = None) -> dict:
+        """Ask a question scoped to the library (or a single book)."""
+        import re
+
+        BOOK_SOURCES = {"kindle", "readwise", "book", "goodreads"}
+
+        if book_id:
+            # Fetch chunks for this specific book
+            try:
+                result = self.store.collection.get(include=["metadatas", "documents"])
+            except Exception:
+                return {"answer": "Could not access knowledge base.", "sources": []}
+
+            docs = []
+            metas = []
+            for doc, meta in zip(result["documents"], result["metadatas"]):
+                src = meta.get("source", "")
+                if src not in BOOK_SOURCES:
+                    continue
+                raw_title = meta.get("book") or meta.get("title", "")
+                for prefix in ("Kindle: ", "Readwise: ", "Book: ", "Goodreads: "):
+                    if raw_title.startswith(prefix):
+                        raw_title = raw_title[len(prefix):]
+                cid = re.sub(r"[^a-z0-9_]", "_", f"{src}_{raw_title}".lower())[:80]
+                if cid == book_id:
+                    docs.append(doc)
+                    metas.append(meta)
+        else:
+            # Search across all book sources
+            queries = self._expand_query(question)
+            scored = self._multi_search(queries, n_candidates=200)
+            book_scored = [(s, d, m, i) for s, d, m, i in scored if m.get("source") in BOOK_SOURCES]
+            docs = [x[1] for x in book_scored[:20]]
+            metas = [x[2] for x in book_scored[:20]]
+
+        if not docs:
+            return {
+                "answer": "No book content found." + (f" Book '{book_id}' not in library." if book_id else " Ingest Kindle or Readwise highlights first."),
+                "sources": [],
+                "question": question,
+            }
+
+        context, sources = _build_numbered_context(docs[:20], metas[:20])
+        book_titles = ", ".join({
+            (m.get("book") or m.get("title", "")).replace("Kindle: ", "").replace("Readwise: ", "")
+            for m in metas[:20] if m.get("book") or m.get("title")
+        })
+
+        scope_note = f" scoped to: {book_titles}" if book_titles else ""
+        answer = self._chat(
+            f"You are Neuron — Ralph's personal library assistant.\n"
+            f"Answer the question using ONLY highlights and notes from Ralph's library{scope_note}.\n"
+            f"Cite sources inline with [N]. Write in second person. Be specific and direct.\n"
+            f"If the answer spans multiple books, note which book each insight comes from.\n\n"
+            f"LIBRARY SOURCES:\n{context}\n\n"
+            f"QUESTION: {question}",
+            max_tokens=2000,
+        )
+        return {"answer": answer, "sources": sources, "question": question}
+
+    def library_connections(self) -> dict:
+        """Find cross-book idea connections and book-to-coursework links."""
+        import json, re
+
+        BOOK_SOURCES = {"kindle", "readwise", "book", "goodreads"}
+
+        # Gather all book chunks
+        try:
+            result = self.store.collection.get(include=["metadatas", "documents"])
+        except Exception:
+            return {"connections": [], "book_to_course": []}
+
+        # Group by book
+        book_samples: dict[str, dict] = {}
+        for doc, meta in zip(result["documents"], result["metadatas"]):
+            src = meta.get("source", "")
+            if src not in BOOK_SOURCES:
+                continue
+            raw_title = meta.get("book") or meta.get("title", "")
+            for prefix in ("Kindle: ", "Readwise: ", "Book: ", "Goodreads: "):
+                if raw_title.startswith(prefix):
+                    raw_title = raw_title[len(prefix):]
+            if not raw_title:
+                continue
+            if raw_title not in book_samples:
+                book_samples[raw_title] = {
+                    "author": meta.get("author", ""),
+                    "text": "",
+                }
+            if len(book_samples[raw_title]["text"]) < 800:
+                book_samples[raw_title]["text"] += " " + doc[:200]
+
+        if len(book_samples) < 2:
+            return {
+                "connections": [],
+                "book_to_course": [],
+                "message": "Need at least 2 books in your library to find connections. Ingest Kindle or Readwise highlights.",
+            }
+
+        # Also gather course/notes context for book-to-coursework links
+        course_samples: list[tuple[str, str, str]] = []  # (title, source, text)
+        for doc, meta in zip(result["documents"], result["metadatas"]):
+            src = meta.get("source", "")
+            if src in ("canvas", "note", "apple_notes", "notion"):
+                title = meta.get("title", "")
+                if title and len(course_samples) < 15:
+                    course_samples.append((title, src, doc[:200]))
+
+        # Build prompt context
+        book_ctx = "\n".join(
+            f'BOOK: "{t}" by {d["author"] or "Unknown"}\nSAMPLE: {d["text"][:400].strip()}'
+            for t, d in list(book_samples.items())[:12]
+        )
+        course_ctx = "\n".join(
+            f'[{src}] {t}: {txt[:150]}'
+            for t, src, txt in course_samples[:10]
+        ) if course_samples else "No course/notes content available."
+
+        raw = self._chat(
+            "You are Neuron. Find meaningful cross-book idea connections and book-to-coursework links.\n\n"
+            "TASK 1 — Cross-book connections: Find 3-5 ideas that appear in MULTIPLE books. "
+            "Each connection should cite specific book titles and explain the shared underlying idea.\n\n"
+            "TASK 2 — Book-to-course links: Find 2-3 places where a book's ideas map directly to "
+            "Ralph's coursework or personal notes. Be specific about which concept from which book "
+            "connects to which course/note.\n\n"
+            "Return ONLY valid JSON (no markdown):\n"
+            '{{\n'
+            '  "connections": [\n'
+            '    {{"idea": "shared idea in 1 sentence", "books": ["Book A", "Book B"], "insight": "why this connection matters"}}\n'
+            '  ],\n'
+            '  "book_to_course": [\n'
+            '    {{"book": "Book Title", "course_or_note": "title", "connection": "1-2 sentence explanation"}}\n'
+            '  ]\n'
+            '}}\n\n'
+            f"BOOKS IN LIBRARY:\n{book_ctx}\n\n"
+            f"RALPH'S COURSES AND NOTES:\n{course_ctx}",
+            max_tokens=1500,
+            model="claude-sonnet-4-6",
+        )
+        try:
+            clean = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+            parsed = json.loads(clean)
+            return {
+                "connections": parsed.get("connections", []),
+                "book_to_course": parsed.get("book_to_course", []),
+                "total_books": len(book_samples),
+            }
+        except Exception:
+            # Try to extract JSON from raw output
+            m = re.search(r'\{[\s\S]*\}', raw)
+            if m:
+                try:
+                    parsed = json.loads(m.group(0))
+                    return {
+                        "connections": parsed.get("connections", []),
+                        "book_to_course": parsed.get("book_to_course", []),
+                        "total_books": len(book_samples),
+                    }
+                except Exception:
+                    pass
+            return {"connections": [], "book_to_course": [], "total_books": len(book_samples)}
+
+    def recap(self) -> dict:
+        """Summarize what Ralph learned and did in the last 7 days."""
+        from datetime import date as _date, timedelta, datetime as _dt
+
+        if self.store.count() == 0:
+            return {"result": "Nothing found in the last 7 days.", "sources": [], "period": "last 7 days"}
+
+        cutoff = (_date.today() - timedelta(days=7)).isoformat()
+
+        seed_queries = [
+            "meeting notes discussion decision",
+            "lecture notes concept learned studied",
+            "work project task completed built",
+            "reading highlights insight takeaway",
+            "personal notes thoughts reflection",
+        ]
+
+        seen_ids: set[str] = set()
+        docs: list[str] = []
+        metas: list[dict] = []
+
+        def _query_recent(q: str, include_undated: bool = False):
+            try:
+                res = self.store.search(q, n_results=25)
+                out = []
+                for doc, meta, doc_id in zip(res["documents"][0], res["metadatas"][0], res["ids"][0]):
+                    if doc_id in seen_ids:
+                        continue
+                    date_str = _extract_date(meta)
+                    if date_str:
+                        if date_str >= cutoff:
+                            out.append((doc, meta, doc_id))
+                    elif include_undated:
+                        out.append((doc, meta, doc_id))
+                return out
+            except Exception:
+                return []
+
+        window_days = 7
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            futures = [pool.submit(_query_recent, q, False) for q in seed_queries]
+            for future in as_completed(futures):
+                for doc, meta, doc_id in future.result():
+                    if doc_id not in seen_ids:
+                        seen_ids.add(doc_id)
+                        docs.append(doc)
+                        metas.append(meta)
+
+        # If very few docs found, widen window to 30 days
+        if len(docs) < 10:
+            window_days = 30
+            cutoff = (_date.today() - timedelta(days=30)).isoformat()
+            seen_ids_extended = set(seen_ids)
+            extra_docs, extra_metas = [], []
+            with ThreadPoolExecutor(max_workers=5) as pool:
+                futures = [pool.submit(_query_recent, q, True) for q in seed_queries]
+                for future in as_completed(futures):
+                    for doc, meta, doc_id in future.result():
+                        if doc_id not in seen_ids_extended:
+                            seen_ids_extended.add(doc_id)
+                            extra_docs.append(doc)
+                            extra_metas.append(meta)
+            docs.extend(extra_docs[:40 - len(docs)])
+            metas.extend(extra_metas[:40 - len(metas)])
+
+        # If still very few docs, widen window to 90 days
+        if len(docs) < 10:
+            window_days = 90
+            cutoff = (_date.today() - timedelta(days=90)).isoformat()
+            seen_ids_extended = set(seen_ids)
+            extra_docs, extra_metas = [], []
+            with ThreadPoolExecutor(max_workers=5) as pool:
+                futures = [pool.submit(_query_recent, q, True) for q in seed_queries]
+                for future in as_completed(futures):
+                    for doc, meta, doc_id in future.result():
+                        if doc_id not in seen_ids_extended:
+                            seen_ids_extended.add(doc_id)
+                            extra_docs.append(doc)
+                            extra_metas.append(meta)
+            docs.extend(extra_docs[:40 - len(docs)])
+            metas.extend(extra_metas[:40 - len(metas)])
+
+        actual_period = f"last {window_days} days"
+
+        if not docs:
+            return {"result": "Nothing new found in the last 90 days.", "sources": [], "period": "last 90 days"}
+
+        context, sources = _build_numbered_context(docs[:30], metas[:30])
+
+        today = _dt.now().strftime("%A, %B %d, %Y")
+
+        prompt = (
+            f"Today is {today}. Ralph is a Columbia CS student. Below is content from his personal knowledge base covering the {actual_period} — "
+            f"his notes, meetings, courses, and reading.\n\n"
+            f"Produce a structured weekly learning recap. Output ONLY valid JSON (no markdown fences, no prose outside JSON). "
+            f"Use exactly this shape:\n"
+            f'{{\n'
+            f'  "narrative": "2-3 sentence paragraph. Second person, sharp, like a smart friend summarizing the week. No filler. Name actual concepts.",\n'
+            f'  "topics_this_week": ["topic1", "topic2", ...],\n'
+            f'  "most_active_areas": ["area1", "area2", ...],\n'
+            f'  "books": [{{"title": "...", "status": "reading|finished|started"}}],\n'
+            f'  "key_insights": ["One concrete takeaway from the week", ...],\n'
+            f'  "connections": ["One non-obvious link between two things touched this week — a deeper structural insight, not obvious overlap"],\n'
+            f'  "open_question": "Exactly one specific question worth exploring next week. Format: How does X work in Y context?"\n'
+            f'}}\n\n'
+            f"RULES:\n"
+            f"- Draw ONLY from content below. Do not invent.\n"
+            f"- topics_this_week: 3-7 specific topics (e.g. 'Virtual memory', 'TCP congestion control').\n"
+            f"- most_active_areas: 2-4 high-level domains (e.g. 'Operating Systems', 'Accounting').\n"
+            f"- books: only include if actual book content appears in sources. Empty array [] if none.\n"
+            f"- key_insights: 2-4 concrete takeaways. Specific, not generic.\n"
+            f"- connections: 1-2 items. Cross-domain preferred.\n"
+            f"- open_question: exactly one question, specific.\n\n"
+            f"CONTENT:\n{context}"
+        )
+
+        import json as _json
+        result_text = self._chat(prompt, max_tokens=900, model="claude-sonnet-4-6")
+
+        # Try to parse the structured JSON; fall back to plain text wrapped in result key
+        try:
+            structured = _json.loads(result_text.strip())
+        except Exception:
+            # Try to extract JSON block if model wrapped it in prose
+            import re as _re
+            m = _re.search(r'\{[\s\S]+\}', result_text)
+            if m:
+                try:
+                    structured = _json.loads(m.group(0))
+                except Exception:
+                    structured = {}
+            else:
+                structured = {}
+
+        if not structured:
+            structured = {"narrative": result_text}
+
+        structured["sources"] = sources
+        structured["period"] = actual_period
+        return structured

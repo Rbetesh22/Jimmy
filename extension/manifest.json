@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Neuron",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Save anything to your personal knowledge base.",
   "permissions": ["activeTab", "contextMenus", "storage", "scripting"],
-  "host_permissions": ["http://localhost:7700/*", "https://*.neuron.app/*"],
+  "host_permissions": ["<all_urls>"],
   "action": {
     "default_popup": "popup.html",
     "default_icon": {

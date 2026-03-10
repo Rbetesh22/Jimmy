@@ -1,5 +1,8 @@
 # Secrets
 .env
+*.key
+*.pem
+google_token_*.json
 
 # Python
 .venv/
@@ -15,9 +18,12 @@ build/
 # Database
 *.db
 *.sqlite
+accounts.db
 
 # OS
 .DS_Store
 
-# Cache
+# Cache / generated data
 .neuron/
+bm25_cache.pkl
+bm25_index.pkl

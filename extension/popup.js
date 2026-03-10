@@ -44,12 +44,12 @@ document.addEventListener("DOMContentLoaded", async () => {
 document.getElementById("savePage").addEventListener("click", async () => {
   const btn = document.getElementById("savePage");
   btn.disabled = true;
-  btn.innerHTML = "<span>⏳</span> Saving...";
+  btn.textContent = "Saving...";
 
   const msgType = isYouTube ? "SAVE_YOUTUBE" : "SAVE_PAGE";
   chrome.runtime.sendMessage(
     { type: msgType, url: currentTab.url, title: currentTab.title },
-    (resp) => showFeedback(resp, btn, "⚡ Save to Neuron")
+    (resp) => showFeedback(resp, btn, "Save to Neuron")
   );
 });
 
@@ -57,16 +57,21 @@ document.getElementById("savePage").addEventListener("click", async () => {
 document.getElementById("saveSelection").addEventListener("click", async () => {
   const btn = document.getElementById("saveSelection");
   btn.disabled = true;
+  btn.textContent = "Saving...";
 
   chrome.scripting.executeScript({
     target: { tabId: currentTab.id },
     func: () => window.getSelection()?.toString()?.trim(),
   }).then(([result]) => {
     const text = result?.result;
-    if (!text) return;
+    if (!text) {
+      btn.disabled = false;
+      btn.textContent = "Save selected text";
+      return;
+    }
     chrome.runtime.sendMessage(
       { type: "SAVE_TEXT", text, title: currentTab.title, url: currentTab.url },
-      (resp) => showFeedback(resp, btn, "✂️ Save selected text")
+      (resp) => showFeedback(resp, btn, "Save selected text")
     );
   });
 });
@@ -81,16 +86,41 @@ document.getElementById("askBtn").addEventListener("click", () => {
   btn.disabled = true;
   btn.textContent = "Thinking...";
   answerEl.style.display = "none";
+  answerEl.textContent = "";
 
   chrome.runtime.sendMessage({ type: "ASK", question: q }, (resp) => {
     btn.disabled = false;
     btn.textContent = "Ask Neuron";
+
+    if (resp?.error) {
+      answerEl.style.display = "block";
+      answerEl.style.color = "#c0392b";
+      answerEl.textContent = resp.error;
+      return;
+    }
+
+    const answer = resp?.answer || "No response.";
+    const sources = resp?.sources || [];
+
+    let displayText = answer;
+    if (sources.length > 0) {
+      const sourceList = sources
+        .slice(0, 4)
+        .map((s) => s.title || s.source || "")
+        .filter(Boolean)
+        .join(", ");
+      if (sourceList) {
+        displayText += `\n\nSources: ${sourceList}`;
+      }
+    }
+
     answerEl.style.display = "block";
-    answerEl.textContent = resp?.answer || resp?.error || "No response.";
+    answerEl.style.color = "";
+    answerEl.textContent = displayText;
   });
 });
 
-// Enter to submit ask
+// Enter to submit ask (Shift+Enter for newline)
 document.getElementById("askInput").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
@@ -101,12 +131,12 @@ document.getElementById("askInput").addEventListener("keydown", (e) => {
 function showFeedback(resp, btn, resetLabel) {
   const fb = document.getElementById("feedback");
   btn.disabled = false;
-  btn.innerHTML = resetLabel;
+  btn.textContent = resetLabel;
   fb.style.display = "block";
 
   if (resp?.ok) {
     fb.className = "feedback success";
-    fb.textContent = `✓ Saved "${(resp.title || "").slice(0, 50)}" — ${resp.chunks} chunks`;
+    fb.textContent = `Saved "${(resp.title || "").slice(0, 50)}"${resp.chunks ? ` — ${resp.chunks} chunks` : ""}`;
   } else {
     fb.className = "feedback error";
     fb.textContent = resp?.error || "Something went wrong.";

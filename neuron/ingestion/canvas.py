@@ -267,7 +267,6 @@ class CanvasIngester:
             "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
             # .ppt (binary) is unsupported by python-pptx; skip it
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
-            "application/msword": ".doc",
         }
         docs = []
         file_ingester = FileIngester()

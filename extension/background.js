@@ -51,11 +51,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     ask(msg.question).then(sendResponse);
     return true;
   }
+  if (msg.type === "GET_SETTINGS") {
+    getSettings().then(sendResponse);
+    return true;
+  }
+  if (msg.type === "SAVE_SETTINGS") {
+    saveSettings(msg.settings).then(sendResponse);
+    return true;
+  }
 });
 
+// Use chrome.storage.sync so settings persist across devices
 async function getSettings() {
-  const data = await chrome.storage.local.get(["apiBase"]);
+  const data = await chrome.storage.sync.get(["apiBase"]);
   return { apiBase: data.apiBase || API_BASE };
+}
+
+async function saveSettings(settings) {
+  await chrome.storage.sync.set(settings);
+  return { ok: true };
 }
 
 async function savePage(url, title) {
@@ -67,10 +81,10 @@ async function savePage(url, title) {
       body: JSON.stringify({ url }),
     });
     const data = await res.json();
-    if (!res.ok) return { ok: false, error: data.detail };
+    if (!res.ok) return { ok: false, error: data.detail || `Server error (${res.status})` };
     return { ok: true, title: data.title, chunks: data.chunks };
   } catch (e) {
-    return { ok: false, error: "Cannot reach Neuron server. Is it running?" };
+    return { ok: false, error: "Cannot reach Neuron server. Is it running on " + apiBase + "?" };
   }
 }
 
@@ -83,9 +97,14 @@ async function saveText(text, title, url) {
       body: JSON.stringify({ text, title, source: "web" }),
     });
     const data = await res.json();
-    return { ok: res.ok, chunks: data.chunks };
+    if (!res.ok) return { ok: false, error: data.detail || `Server error (${res.status})` };
+    return {
+      ok: true,
+      title: title || data.title || "Selection",
+      chunks: data.chunks ?? data.chunks_created ?? 0,
+    };
   } catch (e) {
-    return { ok: false, error: "Cannot reach Neuron server." };
+    return { ok: false, error: "Cannot reach Neuron server. Is it running on " + apiBase + "?" };
   }
 }
 
@@ -98,10 +117,10 @@ async function saveYouTube(url) {
       body: JSON.stringify({ url }),
     });
     const data = await res.json();
-    if (!res.ok) return { ok: false, error: data.detail };
-    return { ok: true, title: data.title, chunks: data.chunks };
+    if (!res.ok) return { ok: false, error: data.detail || `Server error (${res.status})` };
+    return { ok: true, title: data.title, chunks: data.chunks ?? data.chunks_created ?? 0 };
   } catch (e) {
-    return { ok: false, error: "Cannot reach Neuron server." };
+    return { ok: false, error: "Cannot reach Neuron server. Is it running on " + apiBase + "?" };
   }
 }
 
@@ -109,6 +128,7 @@ async function getStatus() {
   const { apiBase } = await getSettings();
   try {
     const res = await fetch(`${apiBase}/status`);
+    if (!res.ok) return { error: `Server error (${res.status})` };
     return await res.json();
   } catch (e) {
     return { error: "Cannot reach Neuron server. Is it running?" };
@@ -123,8 +143,14 @@ async function ask(question) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ q: question }),
     });
-    return await res.json();
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      return { error: errData.detail || `Server error (${res.status})` };
+    }
+    const data = await res.json();
+    // Normalize: /ask returns { answer, sources, question }
+    return { answer: data.answer || data.text || "No answer returned.", sources: data.sources || [] };
   } catch (e) {
-    return { error: "Cannot reach Neuron server." };
+    return { error: "Cannot reach Neuron server. Make sure it is running at " + apiBase };
   }
 }

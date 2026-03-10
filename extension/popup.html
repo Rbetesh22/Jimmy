@@ -8,73 +8,75 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      width: 340px;
-      background: #0f0f13;
-      color: #e8e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+      width: 360px;
+      background: #f7f7f5;
+      color: #1d1d1f;
       min-height: 200px;
     }
 
     .header {
-      padding: 16px 18px 12px;
-      border-bottom: 1px solid #1e1e2e;
+      padding: 14px 16px 12px;
+      border-bottom: 1px solid rgba(0,0,0,0.08);
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 9px;
+      background: #ffffff;
     }
 
     .logo {
-      width: 28px;
-      height: 28px;
-      background: linear-gradient(135deg, #7c6aff, #a78bfa);
-      border-radius: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 14px;
+      width: 24px;
+      height: 24px;
+      background: linear-gradient(135deg, #5856d6, #0071e3);
+      border-radius: 7px;
+      flex-shrink: 0;
     }
 
     .logo-text {
       font-size: 15px;
       font-weight: 600;
-      color: #fff;
+      color: #1d1d1f;
+      letter-spacing: -0.2px;
     }
 
     .status-dot {
       width: 7px;
       height: 7px;
       border-radius: 50%;
-      background: #444;
+      background: #aeaeb2;
       margin-left: auto;
+      flex-shrink: 0;
     }
-    .status-dot.online { background: #22c55e; }
-    .status-dot.offline { background: #ef4444; }
+    .status-dot.online { background: #34c759; }
+    .status-dot.offline { background: #ff3b30; }
 
     .status-count {
       font-size: 11px;
-      color: #666;
+      color: #aeaeb2;
+      font-variant-numeric: tabular-nums;
     }
 
     .body { padding: 14px; }
 
     /* Page info */
     .page-info {
-      background: #1a1a24;
-      border: 1px solid #2a2a3a;
-      border-radius: 8px;
+      background: #f2f2f0;
+      border: 1px solid rgba(0,0,0,0.08);
+      border-radius: 10px;
       padding: 10px 12px;
       margin-bottom: 12px;
       font-size: 12px;
     }
     .page-title {
-      color: #c4c4d8;
+      color: #1d1d1f;
       font-weight: 500;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      line-height: 1.4;
     }
     .page-url {
-      color: #555;
+      color: #aeaeb2;
       font-size: 11px;
       margin-top: 2px;
       white-space: nowrap;
@@ -82,112 +84,162 @@
       text-overflow: ellipsis;
     }
 
+    /* YouTube badge */
+    .youtube-badge {
+      display: none;
+      background: #fff5f5;
+      border: 1px solid rgba(255,59,48,0.18);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 11px;
+      color: #ff3b30;
+      margin-bottom: 10px;
+      text-align: center;
+      font-weight: 500;
+    }
+
     /* Buttons */
     .btn {
       width: 100%;
       padding: 10px 14px;
       border: none;
-      border-radius: 8px;
+      border-radius: 10px;
       font-size: 13px;
       font-weight: 500;
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 7px;
-      transition: opacity 0.15s, transform 0.1s;
+      gap: 6px;
+      transition: opacity 0.12s, background 0.12s;
+      font-family: inherit;
+      letter-spacing: -0.1px;
     }
-    .btn:active { transform: scale(0.98); }
-    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn:active { opacity: 0.75; }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
     .btn-primary {
-      background: linear-gradient(135deg, #7c6aff, #a78bfa);
-      color: #fff;
+      background: #0071e3;
+      color: #ffffff;
       margin-bottom: 8px;
+      box-shadow: 0 1px 3px rgba(0,113,227,0.18);
     }
-    .btn-primary:hover:not(:disabled) { opacity: 0.9; }
+    .btn-primary:hover:not(:disabled) { background: #0077ed; }
 
     .btn-secondary {
-      background: #1e1e2e;
-      color: #c4c4d8;
-      border: 1px solid #2a2a3a;
+      background: #ffffff;
+      color: #1d1d1f;
+      border: 1px solid rgba(0,0,0,0.13);
+      margin-bottom: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+    }
+    .btn-secondary:hover:not(:disabled) { background: #f7f7f5; }
+
+    /* Save selection button — accent-tinted secondary */
+    .btn-selection {
+      background: rgba(0,113,227,0.07);
+      color: #0071e3;
+      border: 1px solid rgba(0,113,227,0.18);
       margin-bottom: 8px;
     }
-    .btn-secondary:hover:not(:disabled) { background: #252535; }
-
-    .btn-ghost {
-      background: transparent;
-      color: #666;
-      font-size: 12px;
-    }
-    .btn-ghost:hover { color: #999; }
+    .btn-selection:hover:not(:disabled) { background: rgba(0,113,227,0.11); }
 
     /* Feedback */
     .feedback {
-      background: #1a1a24;
-      border: 1px solid #2a2a3a;
-      border-radius: 8px;
-      padding: 10px 12px;
+      border-radius: 9px;
+      padding: 9px 12px;
       font-size: 12px;
-      margin-top: 10px;
+      margin-top: 8px;
       display: none;
+      font-weight: 500;
+      line-height: 1.4;
     }
-    .feedback.success { border-color: #22c55e44; color: #22c55e; }
-    .feedback.error { border-color: #ef444444; color: #ef4444; }
+    .feedback.success {
+      background: rgba(52,199,89,0.1);
+      border: 1px solid rgba(52,199,89,0.22);
+      color: #1a8a3c;
+    }
+    .feedback.error {
+      background: rgba(255,59,48,0.08);
+      border: 1px solid rgba(255,59,48,0.2);
+      color: #c0392b;
+    }
 
-    /* Ask */
-    .ask-section { margin-top: 10px; }
+    /* Divider */
+    .divider {
+      height: 1px;
+      background: rgba(0,0,0,0.08);
+      margin: 14px 0;
+    }
+
+    /* Ask section */
+    .ask-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: #6e6e73;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      margin-bottom: 7px;
+    }
+
     .ask-input {
       width: 100%;
-      background: #1a1a24;
-      border: 1px solid #2a2a3a;
-      border-radius: 8px;
-      color: #e8e8f0;
-      font-size: 12px;
+      background: #ffffff;
+      border: 1px solid rgba(0,0,0,0.13);
+      border-radius: 10px;
+      color: #1d1d1f;
+      font-size: 13px;
       padding: 9px 12px;
       resize: none;
       outline: none;
       font-family: inherit;
+      line-height: 1.5;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+      transition: border-color 0.12s, box-shadow 0.12s;
     }
-    .ask-input:focus { border-color: #7c6aff66; }
-    .ask-input::placeholder { color: #444; }
+    .ask-input:focus {
+      border-color: #0071e3;
+      box-shadow: 0 0 0 3px rgba(0,113,227,0.12), 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .ask-input::placeholder { color: #aeaeb2; }
+
+    .ask-btn-row {
+      margin-top: 7px;
+    }
+
+    .btn-ask {
+      background: #0071e3;
+      color: #ffffff;
+      box-shadow: 0 1px 3px rgba(0,113,227,0.18);
+    }
+    .btn-ask:hover:not(:disabled) { background: #0077ed; }
 
     .answer {
-      background: #1a1a24;
-      border: 1px solid #2a2a3a;
-      border-radius: 8px;
-      padding: 10px 12px;
-      font-size: 12px;
-      line-height: 1.6;
-      color: #c4c4d8;
-      margin-top: 8px;
+      background: #ffffff;
+      border: 1px solid rgba(0,0,0,0.08);
+      border-radius: 10px;
+      padding: 11px 13px;
+      font-size: 13px;
+      line-height: 1.65;
+      color: #1d1d1f;
+      margin-top: 9px;
       display: none;
-      max-height: 200px;
+      max-height: 220px;
       overflow-y: auto;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+      white-space: pre-wrap;
+      word-break: break-word;
     }
 
-    .divider {
-      height: 1px;
-      background: #1e1e2e;
-      margin: 12px 0;
-    }
-
-    .youtube-badge {
-      display: none;
-      background: #1e0a0a;
-      border: 1px solid #ef444422;
-      border-radius: 6px;
-      padding: 6px 10px;
-      font-size: 11px;
-      color: #ef4444;
-      margin-bottom: 8px;
-      text-align: center;
-    }
+    /* Scrollbar polish */
+    .answer::-webkit-scrollbar { width: 5px; }
+    .answer::-webkit-scrollbar-track { background: transparent; }
+    .answer::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 4px; }
   </style>
 </head>
 <body>
   <div class="header">
-    <div class="logo">⚡</div>
+    <div class="logo"></div>
     <span class="logo-text">Neuron</span>
     <span class="status-count" id="statusCount"></span>
     <div class="status-dot" id="statusDot"></div>
@@ -200,27 +252,30 @@
     </div>
 
     <div class="youtube-badge" id="youtubeBadge">
-      📺 YouTube detected — will save transcript
+      YouTube detected — will save transcript
     </div>
 
     <button class="btn btn-primary" id="savePage">
-      <span>⚡</span> Save to Neuron
+      Save to Neuron
     </button>
 
-    <button class="btn btn-secondary" id="saveSelection" style="display:none">
-      <span>✂️</span> Save selected text
+    <button class="btn btn-selection" id="saveSelection" style="display:none">
+      Save selected text
     </button>
 
     <div class="feedback" id="feedback"></div>
 
     <div class="divider"></div>
 
+    <div class="ask-label">Ask your knowledge base</div>
     <div class="ask-section">
       <textarea class="ask-input" id="askInput" rows="2"
-        placeholder="Ask your knowledge base anything..."></textarea>
-      <button class="btn btn-secondary" id="askBtn" style="margin-top:6px">
-        Ask Neuron
-      </button>
+        placeholder="What do I know about..."></textarea>
+      <div class="ask-btn-row">
+        <button class="btn btn-ask" id="askBtn">
+          Ask Neuron
+        </button>
+      </div>
       <div class="answer" id="answer"></div>
     </div>
   </div>

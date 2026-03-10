@@ -1,6 +1,7 @@
 import chromadb
 from chromadb import Settings
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+import os
 
 
 def _patch_hnswlib():
@@ -46,8 +47,16 @@ def _patch_hnswlib():
 
 
 def _make_client(data_dir):
-    """Use pure-Python SegmentAPI (no Rust bindings) to avoid segfaults on Apple Silicon."""
+    """Use an external Chroma HTTP server when configured, else embedded SegmentAPI."""
     _patch_hnswlib()
+    http_host = os.environ.get("CHROMA_HTTP_HOST", "").strip()
+    http_port = os.environ.get("CHROMA_HTTP_PORT", "").strip()
+    if http_host and http_port:
+        return chromadb.HttpClient(
+            host=http_host,
+            port=int(http_port),
+            settings=Settings(anonymized_telemetry=False),
+        )
     s = Settings(
         chroma_api_impl="chromadb.api.segment.SegmentAPI",
         is_persistent=True,
