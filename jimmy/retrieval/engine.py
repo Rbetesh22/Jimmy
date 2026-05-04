@@ -264,16 +264,8 @@ def _digest_source_score(meta: dict) -> float:
     if source in {"notion", "file", "gdrive", "web"}:
         return 1.65 if days_old <= 21 else 1.2
     if source == "canvas":
-        title = _normalize_title(meta.get("title", ""))
-        current_course_terms = (
-            "operating systems", "computer networks", "financial accounting",
-            "analysis of algorithms", "algorithms", "os", "networks", "accounting",
-        )
-        if days_old <= 21:
-            return 1.1
-        if days_old <= 60 and any(term in title for term in current_course_terms):
-            return 0.95
-        return 0.35
+        # All canvas content is historical (graduated May 2025) — heavily downrank
+        return 0.25
     if source in {"readwise", "kindle", "goodreads", "podcast", "youtube"}:
         return 0.9 if days_old <= 45 else 0.55
     return 0.75
@@ -1199,27 +1191,28 @@ class JimmyEngine:
             return {"result": "Knowledge base is empty.", "sources": [], "topic": "digest"}
 
         seed_queries = [
-            # Ideas and concepts being studied
+            # Ideas and concepts
             "idea concept theory framework insight argument",
             "book reading highlight chapter lesson learned",
             "article essay thesis claim evidence",
             "research paper finding result conclusion",
             "podcast lecture talk explanation",
-            # Academic — broad, not person-specific
-            "class lecture course notes concepts",
+            # Learning and synthesis
             "definition explained example counterexample",
             "problem question hypothesis wondering",
-            # Synthesis and connections
             "connects relates similar parallel pattern",
             "contrast difference tension paradox",
             "implication consequence therefore means",
             # Topic coverage — broad intellectual areas
             "history philosophy ethics politics economics",
-            "technology science mathematics physics",
+            "technology science mathematics physics software engineering",
             "literature writing language culture art",
-            "religion theology ethics tradition",
-            "business strategy product market",
+            "religion theology ethics tradition Torah",
+            "business strategy product market startup",
             "artificial intelligence machine learning",
+            # Professional and personal
+            "project work engineering system design architecture",
+            "personal notes journal reflection goals",
         ]
         # Run all seed queries in parallel — use vector-only search to avoid BM25 rebuild hang
         def _vec_search(query: str, n: int = 80):
@@ -1268,8 +1261,7 @@ class JimmyEngine:
         recs_cache = _read_cache("recs_cache.json")
         today_focus = study_plan.get("today_focus", "")
         today_topics_list = (study_plan.get("today_topics") or [])[:3]
-        current_course_terms = {"operating systems", "computer networks", "algorithms", "financial accounting"}
-        active_focus_terms = {t.lower() for t in today_topics_list if t} | {t for t in current_course_terms if t in (today_focus or "").lower()}
+        active_focus_terms = {t.lower() for t in today_topics_list if t}
 
         def _focus_bonus(item: tuple) -> float:
             doc = item[1].lower()
@@ -1282,7 +1274,7 @@ class JimmyEngine:
                 return 1.35
             source = meta.get("source", "")
             if source == "canvas":
-                return 0.45
+                return 0.3  # Historical course material — suppress
             return 0.9
 
         sorted_items = sorted(
@@ -1311,13 +1303,14 @@ class JimmyEngine:
 
         raw = self._chat(
             f"You are Jimmy writing {JIMMY_USER_NAME}'s {daypart} briefing. Today is {today}.\n"
-            f"{_user_prompt_context()}. {JIMMY_USER_NAME} learns best when things are explained slowly, clearly, and from first principles. "
-            f"If a source is passive course material, you must treat it as something he may have saved or uploaded, not something he definitely read or understood.\n\n"
+            f"{_user_prompt_context()}. {JIMMY_USER_NAME} graduated from Columbia in May 2025 and now works at Datadog as a software engineer. "
+            f"He learns best when things are explained slowly, clearly, and from first principles. "
+            f"Any course material (Operating Systems, Algorithms, Financial Accounting, Computer Networks, etc.) is HISTORICAL — from college, NOT current work. "
+            f"Do NOT reference old courses as if they are ongoing. His current focus is professional work, personal projects, and self-directed learning.\n\n"
             f"Below are excerpts from his knowledge base.\n\n"
             f"CURRENT CONTEXT:\n"
-            f"- Today's study focus: {today_focus or 'None'}\n"
-            f"- Topics on deck: {today_topics or 'None'}\n"
-            f"- Most immediate academic items: {exam_names or 'None'}\n\n"
+            f"- Today's focus: {today_focus or 'None'}\n"
+            f"- Topics on deck: {today_topics or 'None'}\n\n"
             f"NEWS CONTEXT:\n{news_text or 'No fresh news summary available.'}\n\n"
             f"OPTIONAL MEDIA RECOMMENDATIONS:\n{media_block or '- none'}\n\n"
             f"Write a daily briefing that feels current, grounded, and easy to absorb.\n\n"
@@ -1332,7 +1325,7 @@ class JimmyEngine:
             f"Make one concrete cross-domain connection only if it is easy to follow in 2 sentences. "
             f"Skip this entirely if the connection would feel forced or too abstract.\n\n"
             f"## Coming Up\n"
-            f"In 1-2 sentences, say what is coming up soon academically. Keep it compact and practical.\n\n"
+            f"In 1-2 sentences, mention what you are working on or what is on deck professionally or personally. Do NOT reference old college courses.\n\n"
             f"## News In Brief\n"
             f"In 1-2 sentences, summarize only the most relevant news from the NEWS CONTEXT. Keep it digestible.\n\n"
             f"## One Next Step\n"

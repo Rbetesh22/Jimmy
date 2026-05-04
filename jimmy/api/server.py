@@ -938,7 +938,7 @@ def today_combined(refresh: bool = False):
         if daily_cache.exists():
             daily_data = json.loads(daily_cache.read_text())
             daily_cached_at = datetime.fromisoformat(daily_data.get("cached_at", "2000-01-01"))
-            if datetime.now() - daily_cached_at < timedelta(hours=24):
+            if daily_cached_at.date() == datetime.now().date() and datetime.now() - daily_cached_at < timedelta(hours=24):
                 result["fact"] = daily_data.get("fact")
                 result["vocab"] = daily_data.get("vocab")
                 result["motivational_note"] = daily_data.get("motivational_note")
@@ -996,7 +996,8 @@ def daily(refresh: bool = False):
         try:
             cached = json.loads(cache_path.read_text())
             cached_at = datetime.fromisoformat(cached.get("cached_at", "2000-01-01"))
-            if datetime.now() - cached_at < timedelta(hours=24):
+            # Invalidate if different day (parsha changes weekly) or older than 24h
+            if cached_at.date() == datetime.now().date() and datetime.now() - cached_at < timedelta(hours=24):
                 return cached
         except Exception:
             pass
@@ -1757,6 +1758,28 @@ def news(refresh: bool = False):
             seen_titles.add(key)
             deduped.append(a)
     articles = deduped
+
+    # Fetch og:image for articles missing images (parallel, with timeout)
+    def _fetch_og_image(article: dict) -> None:
+        if article.get("image"):
+            return
+        try:
+            with httpx.Client(timeout=4, follow_redirects=True) as c:
+                resp = c.get(article["url"], headers={"User-Agent": UA})
+                if resp.status_code == 200:
+                    # Try og:image meta tag
+                    m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', resp.text[:15000])
+                    if not m:
+                        m = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', resp.text[:15000])
+                    if m:
+                        article["image"] = m.group(1)
+        except Exception:
+            pass
+
+    no_image = [a for a in articles if not a.get("image")]
+    if no_image:
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            list(pool.map(_fetch_og_image, no_image[:30]))  # Cap at 30 to avoid slow response
 
     # Prefer articles with images, but keep all
     articles.sort(key=lambda a: (0 if a.get("image") else 1))
