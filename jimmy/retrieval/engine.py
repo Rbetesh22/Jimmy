@@ -1165,7 +1165,7 @@ class JimmyEngine:
         )
         return {"result": result, "sources": sources, "topic": topic}
 
-    def digest(self, sample_size: int = 60) -> dict:
+    def digest(self, sample_size: int = 30) -> dict:
         """Daily briefing — uses targeted searches instead of full collection scan."""
         from datetime import datetime, timedelta
         import json
@@ -1191,31 +1191,18 @@ class JimmyEngine:
             return {"result": "Knowledge base is empty.", "sources": [], "topic": "digest"}
 
         seed_queries = [
-            # Ideas and concepts
             "idea concept theory framework insight argument",
-            "book reading highlight chapter lesson learned",
-            "article essay thesis claim evidence",
-            "research paper finding result conclusion",
-            "podcast lecture talk explanation",
-            # Learning and synthesis
-            "definition explained example counterexample",
-            "problem question hypothesis wondering",
-            "connects relates similar parallel pattern",
-            "contrast difference tension paradox",
-            "implication consequence therefore means",
-            # Topic coverage — broad intellectual areas
-            "history philosophy ethics politics economics",
-            "technology science mathematics physics software engineering",
-            "literature writing language culture art",
-            "religion theology ethics tradition Torah",
+            "book reading highlight lesson learned",
+            "article essay research finding conclusion",
+            "podcast lecture talk explanation definition",
+            "connects relates similar parallel pattern contrast",
+            "history philosophy ethics politics economics religion Torah",
+            "technology science software engineering AI machine learning",
             "business strategy product market startup",
-            "artificial intelligence machine learning",
-            # Professional and personal
-            "project work engineering system design architecture",
-            "personal notes journal reflection goals",
+            "project work engineering system design personal notes goals",
         ]
         # Run all seed queries in parallel — use vector-only search to avoid BM25 rebuild hang
-        def _vec_search(query: str, n: int = 80):
+        def _vec_search(query: str, n: int = 40):
             """Vector-only search for digest — avoids BM25 rebuild blocking thread pool."""
             try:
                 res = self.store.search(query, n_results=n)
@@ -1233,7 +1220,7 @@ class JimmyEngine:
         best: dict[str, tuple] = {}
         with ThreadPoolExecutor(max_workers=8) as pool:
             futures = {
-                pool.submit(_vec_search, q, 80): q
+                pool.submit(_vec_search, q, 40): q
                 for q in seed_queries
             }
             for future in as_completed(futures):

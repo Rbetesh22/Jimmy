@@ -6,6 +6,7 @@ Cloud:  deploy this behind nginx/Railway/Fly.io
 """
 import io
 import tempfile
+import threading
 from pathlib import Path
 from typing import Annotated
 
@@ -89,21 +90,22 @@ def get_store() -> JimmyStore:
     return _store
 
 
+_engine_lock = threading.Lock()
+
 def get_engine() -> JimmyEngine:
     global _engine
     if _engine is None:
-        _engine = JimmyEngine()
+        with _engine_lock:
+            if _engine is None:
+                _engine = JimmyEngine()
     return _engine
 
 
 @app.on_event("startup")
 def _warmup():
-    """Eagerly init engine + BM25 index so first request isn't slow."""
+    """Eagerly init engine. BM25 index built lazily on first search that needs it."""
     import threading
-    def _warm():
-        e = get_engine()
-        e.store._ensure_bm25()
-    threading.Thread(target=_warm, daemon=True).start()
+    threading.Thread(target=get_engine, daemon=True).start()
 
 
 def _fetch_parasha() -> str:
@@ -123,10 +125,9 @@ def _fetch_parasha() -> str:
 
 @app.on_event("startup")
 async def warmup():
-    """Pre-load engine, BM25 index, and start background daemon on startup."""
+    """Start background daemon on startup (engine pre-loaded by _warmup)."""
     import asyncio
     loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, get_engine)
     # Start background daemon (scheduler + inbox watcher + daily compiler)
     try:
         from ..daemon import start_daemon
@@ -890,6 +891,10 @@ def digest(refresh: bool = False):
         except Exception:
             pass
 
+    # Remove stale cache so engine.digest() doesn't re-read it
+    if refresh:
+        cache_path.unlink(missing_ok=True)
+
     try:
         result = get_engine().digest()
         result["cached_at"] = datetime.now().isoformat()
@@ -900,6 +905,9 @@ def digest(refresh: bool = False):
             pass
         return result
     except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        print(f"DIGEST ERROR: {tb}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
