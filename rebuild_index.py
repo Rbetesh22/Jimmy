@@ -6,16 +6,16 @@ Run once after the corrupted Rust-written HNSW files were removed.
 import sys
 import time
 
-sys.path.insert(0, "/Users/ralphbetesh/neuron")
+sys.path.insert(0, "/Users/ralphbetesh/jimmy")
 
-from neuron.storage.store import NeuronStore
-from neuron.config import CHROMA_DIR
+from jimmy.storage.store import JimmyStore
+from jimmy.config import CHROMA_DIR
 
 BATCH_SIZE = 500
 
 def main():
     print("Connecting to store...", flush=True)
-    store = NeuronStore(CHROMA_DIR)
+    store = JimmyStore(CHROMA_DIR)
     total = store.count()
     print(f"Total documents in SQLite: {total}", flush=True)
 

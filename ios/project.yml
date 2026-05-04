@@ -1,4 +1,4 @@
-name: Neuron
+name: Jimmy
 options:
   bundleIdPrefix: com.ralphbetesh
   deploymentTarget:
@@ -12,23 +12,23 @@ settings:
     CURRENT_PROJECT_VERSION: 1
 
 targets:
-  Neuron:
+  Jimmy:
     type: application
     platform: iOS
     deploymentTarget: "17.0"
     sources:
-      - path: Neuron
+      - path: Jimmy
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.ralphbetesh.Neuron
-        INFOPLIST_FILE: Neuron/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.ralphbetesh.Jimmy
+        INFOPLIST_FILE: Jimmy/Info.plist
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
     info:
-      path: Neuron/Info.plist
+      path: Jimmy/Info.plist
       properties:
-        CFBundleName: Neuron
-        CFBundleDisplayName: Neuron
+        CFBundleName: Jimmy
+        CFBundleDisplayName: Jimmy
         CFBundleShortVersionString: "1.0"
         CFBundleVersion: "1"
         UILaunchStoryboardName: ""

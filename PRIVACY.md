@@ -1,4 +1,4 @@
-# Neuron — Privacy & Data Flow Reference
+# Jimmy — Privacy & Data Flow Reference
 
 This document is an honest breakdown of what data leaves your machine, what
 third-party services are connected, and how to revoke access.
@@ -65,22 +65,22 @@ or send anything in your Google account.
 
 ## What is stored locally
 
-All data is stored in ~/.neuron/ (never uploaded anywhere by default):
+All data is stored in ~/.jimmy/ (never uploaded anywhere by default):
 
-- ~/.neuron/chroma/ — ChromaDB vector database containing all ingested content
+- ~/.jimmy/chroma/ — ChromaDB vector database containing all ingested content
   chunks and their embeddings. Not encrypted at rest. Protected only by macOS
   filesystem permissions.
-- ~/.neuron/google_token_<email>.json — Google OAuth refresh tokens. Sensitive.
+- ~/.jimmy/google_token_<email>.json — Google OAuth refresh tokens. Sensitive.
   Do not commit these. They are listed in .gitignore.
-- ~/.neuron/digest_cache.json and other *_cache.json files — AI-generated
+- ~/.jimmy/digest_cache.json and other *_cache.json files — AI-generated
   summaries cached locally. Contain excerpts of your content.
-- ~/.neuron/twscrape_pool.db — Twitter session pool (if Twitter is configured).
-- ~/.neuron/srs_data.json — Spaced repetition review history.
-- ~/neuron/.env — All API keys and secrets. Listed in .gitignore. Never commit.
+- ~/.jimmy/twscrape_pool.db — Twitter session pool (if Twitter is configured).
+- ~/.jimmy/srs_data.json — Spaced repetition review history.
+- ~/jimmy/.env — All API keys and secrets. Listed in .gitignore. Never commit.
 
 The ChromaDB data is NOT encrypted at rest. On a personal Mac with FileVault
 disk encryption enabled, this is adequately protected. If you share your
-machine or have it managed by an institution, be aware that ~/.neuron/chroma
+machine or have it managed by an institution, be aware that ~/.jimmy/chroma
 contains the full text of your notes, emails, and documents.
 
 ---
@@ -88,15 +88,15 @@ contains the full text of your notes, emails, and documents.
 ## API server security
 
 The server binds to 127.0.0.1 by default (localhost only) when started with
-`neuron serve`. It is NOT exposed to the network unless you explicitly pass
+`jimmy serve`. It is NOT exposed to the network unless you explicitly pass
 `--host 0.0.0.0`.
 
 CORS is restricted to:
 - http://localhost:7700
 - http://127.0.0.1:7700
-- chrome-extension://* (for the Neuron browser extension)
+- chrome-extension://* (for the Jimmy browser extension)
 
-API key authentication is available. Set NEURON_API_KEY in .env. When set,
+API key authentication is available. Set JIMMY_API_KEY in .env. When set,
 all sensitive endpoints require the header X-API-Key: <your-key>. The /health,
 /app, /manifest.json, and /graph-ui endpoints remain public (no personal data).
 
@@ -107,7 +107,7 @@ all sensitive endpoints require the header X-API-Key: <your-key>. The /health,
 Google (Calendar, Gmail, Drive):
   - Go to myaccount.google.com/permissions
   - Find your OAuth app and click "Remove Access"
-  - Delete ~/.neuron/google_token_*.json
+  - Delete ~/.jimmy/google_token_*.json
 
 Canvas:
   - Log in to Canvas > Account > Settings > Approved Integrations
@@ -133,7 +133,7 @@ WHOOP:
 
 Twitter/X:
   - Remove TWITTER_USERNAME and TWITTER_PASSWORD from .env
-  - Delete ~/.neuron/twscrape_pool.db
+  - Delete ~/.jimmy/twscrape_pool.db
 
 Anthropic:
   - Go to console.anthropic.com/settings/keys and revoke the key
@@ -144,7 +144,7 @@ Anthropic:
 
 - The Chrome extension only sends URLs and page content to localhost:7700.
   It does not transmit data to any external server.
-- No analytics, telemetry, or usage tracking is built into Neuron.
+- No analytics, telemetry, or usage tracking is built into Jimmy.
 - The server has no database of users — it is single-user by design.
 - No content is persisted by Anthropic after an API call under standard API
   terms (not Claude.ai consumer product terms).

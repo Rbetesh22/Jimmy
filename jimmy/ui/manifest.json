@@ -1,0 +1,30 @@
+{
+  "name": "Jimmy",
+  "short_name": "Jimmy",
+  "description": "Your personal intelligence system",
+  "start_url": "/app",
+  "display": "standalone",
+  "background_color": "#fafaf8",
+  "theme_color": "#2563eb",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["productivity", "education"],
+  "shortcuts": [
+    { "name": "Ask", "url": "/app#ask", "description": "Ask your knowledge base" },
+    { "name": "Digest", "url": "/app#digest", "description": "Today's digest" },
+    { "name": "News", "url": "/app#news", "description": "Today's World" }
+  ]
+}

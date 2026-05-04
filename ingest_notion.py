@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Ingest a Notion export into Neuron.
+Ingest a Notion export into Jimmy.
 Usage: python ingest_notion.py <path_to_notion_export_dir>
 """
 

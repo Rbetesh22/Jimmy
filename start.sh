@@ -1,12 +1,12 @@
 #!/bin/bash
-# Start Neuron server + Cloudflare tunnel
+# Start Jimmy server + Cloudflare tunnel
 # Usage: ./start.sh
 set -e
 cd "$(dirname "$0")"
 
-echo "Starting Neuron server..."
+echo "Starting Jimmy server..."
 source .venv/bin/activate
-python3 -m uvicorn neuron.api.server:app --port 7700 --host 0.0.0.0 --log-level warning &
+python3 -m uvicorn jimmy.api.server:app --port 7700 --host 0.0.0.0 --log-level warning &
 SERVER_PID=$!
 
 echo "Waiting for server..."
@@ -23,7 +23,7 @@ sleep 5
 CF_URL=$(grep -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" /tmp/cf.log | head -1)
 echo ""
 echo "======================================"
-echo "  Neuron is running!"
+echo "  Jimmy is running!"
 echo "  URL: $CF_URL"
 echo "  Set this in iOS Settings > Server URL"
 echo "======================================"

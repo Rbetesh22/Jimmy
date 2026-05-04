@@ -1,0 +1,16 @@
+extension/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+ios/
+.env
+.env.local
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+tests/
+benchmarks/
+docs/

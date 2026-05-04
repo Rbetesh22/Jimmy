@@ -24,6 +24,6 @@ accounts.db
 .DS_Store
 
 # Cache / generated data
-.neuron/
+.jimmy/
 bm25_cache.pkl
 bm25_index.pkl

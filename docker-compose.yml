@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  jimmy:
+    build: .
+    ports:
+      - "7700:7700"
+    volumes:
+      - "${HOME}/.jimmy:/data"
+    environment:
+      - JIMMY_DATA_DIR=/data
+    env_file:
+      - .env.local
+    restart: unless-stopped

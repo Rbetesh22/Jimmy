@@ -1,6 +1,6 @@
 [project]
-name = "neuron"
-version = "0.1.0"
+name = "jimmy"
+version = "0.3.0-beta"
 description = "Personal intelligence system"
 requires-python = ">=3.10"
 dependencies = [
@@ -22,10 +22,14 @@ dependencies = [
     "feedparser>=6.0.11",
     "youtube-transcript-api>=0.6.2",
     "spotipy>=2.23.0",
+    "watchdog>=4.0.0",
 ]
 
 [project.scripts]
-neuron = "neuron.cli:cli"
+jimmy = "jimmy.cli:cli"
+
+[tool.setuptools.packages.find]
+include = ["jimmy*"]
 
 [build-system]
 requires = ["setuptools>=68"]
