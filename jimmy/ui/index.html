@@ -2548,30 +2548,151 @@ async function renderTimeline() {
 }
 
 // ── NEWS ────────────────────────────────────────────────────────────────────────
-const NEWS_CAT_COLORS = {World:'#ff375f',Israel:'#0038b8',Politics:'#ff9f0a',Tech:'#0071e3',AI:'#5856d6',Finance:'#34c759',Sports:'#ff6b35',Torah:'#6c5ce7'};
-const NEWS_CAT_ICONS = {World:'🌍',Israel:'🇮🇱',Politics:'🏛',Tech:'💻',AI:'✦',Finance:'📈',Sports:'⚽',Torah:'✡'};
+const NEWS_CAT_COLORS = {World:'#ff375f',Israel:'#0038b8',Politics:'#ff9f0a',Tech:'#0071e3',AI:'#5856d6',Finance:'#34c759',Sports:'#ff6b35',Torah:'#c9a24d'};
+const NEWS_CAT_ICONS = {World:'globe',Israel:'star.of.david',Politics:'building.columns',Tech:'laptopcomputer',AI:'cpu',Finance:'chart.line.uptrend.xyaxis',Sports:'sportscourt',Torah:'book'};
+const NEWS_CAT_EMOJI = {World:'\u{1F30D}',Israel:'\u{1F1EE}\u{1F1F1}',Politics:'\u{1F3DB}',Tech:'\u{1F4BB}',AI:'\u2726',Finance:'\u{1F4C8}',Sports:'\u26BD',Torah:'\u2721'};
+const NEWS_CAT_GRADIENTS = {
+  World:'linear-gradient(135deg,#1a1a2e,#16213e,#0f3460)',
+  Israel:'linear-gradient(135deg,#0a1628,#0d2d5a,#003080)',
+  Politics:'linear-gradient(135deg,#2d1b00,#4a2c00,#6b3f00)',
+  Tech:'linear-gradient(135deg,#0d0d2b,#1a1a4e,#2d1b69)',
+  AI:'linear-gradient(135deg,#1a0a2e,#2d1260,#4a1a8a)',
+  Finance:'linear-gradient(135deg,#0a2818,#0d3d22,#1a5c35)',
+  Sports:'linear-gradient(135deg,#2b1400,#4a2200,#6b3500)',
+  Torah:'linear-gradient(135deg,#2b2000,#4a3800,#6b5000)'
+};
 const NEWS_CAT_ORDER = ['World','Israel','Politics','Tech','AI','Finance','Sports','Torah'];
 let newsActiveCat = 'All';
 let _newsBycat = {};
+let _newsExpandedCats = {};
 
-function _newsCardHtml(a, size='normal') {
-  const large = size === 'hero';
-  const medium = size === 'medium';
-  const imgH = large ? '220px' : medium ? '160px' : '116px';
-  const titleSize = large ? '17px' : medium ? '14.5px' : '13px';
-  const titleWeight = large ? '700' : '600';
-  return `<a href="${esc(a.url)}" target="_blank" rel="noopener" class="hover-dim"
-    style="display:block;text-decoration:none;">
-    ${a.image
-      ? `<div style="width:100%;height:${imgH};background:url('${esc(a.image)}') center/cover no-repeat;background-color:var(--surface-2);border-radius:10px;margin-bottom:8px;flex-shrink:0;"></div>`
-      : `<div style="width:100%;height:${large?'140px':medium?'100px':'72px'};background:var(--surface-2);border-radius:10px;margin-bottom:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-           <span style="font-size:${large?'30px':'22px'};opacity:0.25;">${NEWS_CAT_ICONS[a.category]||'📰'}</span>
-         </div>`
-    }
-    <div style="font-size:10px;color:var(--text-3);font-weight:500;margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em;">${esc(a.source)}</div>
-    <div style="font-size:${titleSize};font-weight:${titleWeight};color:var(--text);line-height:1.35;letter-spacing:-0.1px;">${esc(a.title)}</div>
-    ${large && a.description ? `<div style="font-size:13px;color:var(--text-2);margin-top:6px;line-height:1.55;">${esc(a.description.slice(0,160))}${a.description.length>160?'…':''}</div>` : ''}
+/* ── Relative time helper ── */
+function _newsRelativeTime(dateStr) {
+  if (!dateStr) return '';
+  try {
+    let d;
+    // Try RFC 2822 first (RSS pubDate), then ISO
+    d = new Date(dateStr);
+    if (isNaN(d.getTime())) return '';
+    const now = new Date();
+    const diffMs = now - d;
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffHr = Math.floor(diffMs / 3600000);
+    const diffDay = Math.floor(diffMs / 86400000);
+    if (diffMin < 1) return 'Just now';
+    if (diffMin < 60) return `${diffMin}m ago`;
+    if (diffHr < 24) return `${diffHr}h ago`;
+    if (diffDay === 1) return 'Yesterday';
+    if (diffDay < 7) return `${diffDay}d ago`;
+    return d.toLocaleDateString('en-US', {month:'short', day:'numeric'});
+  } catch { return ''; }
+}
+
+/* ── Source badge color (stable hash) ── */
+function _newsSourceColor(source) {
+  const colors = ['#ff375f','#ff6b35','#ff9f0a','#34c759','#30d158','#00c7be','#0071e3','#5856d6','#bf5af2','#ff2d55','#a2845e'];
+  let h = 0;
+  for (let i = 0; i < source.length; i++) h = ((h << 5) - h + source.charCodeAt(i)) | 0;
+  return colors[Math.abs(h) % colors.length];
+}
+
+/* ── Hero card (full-width, image with overlay) ── */
+function _newsHeroCard(a) {
+  const relTime = _newsRelativeTime(a.published);
+  const catColor = NEWS_CAT_COLORS[a.category] || '#6c8aff';
+  if (a.image) {
+    return `<a href="${esc(a.url)}" target="_blank" rel="noopener" class="news-card-hover"
+      style="display:block;text-decoration:none;position:relative;border-radius:14px;overflow:hidden;aspect-ratio:16/9;background:var(--surface-2);">
+      <img src="${esc(a.image)}" alt="" style="width:100%;height:100%;object-fit:cover;display:block;" onerror="this.parentElement.querySelector('.news-hero-fallback').style.display='flex';this.style.display='none';">
+      <div class="news-hero-fallback" style="display:none;width:100%;height:100%;position:absolute;top:0;left:0;background:${NEWS_CAT_GRADIENTS[a.category]||'linear-gradient(135deg,#1a1a2e,#2d2d4e)'};align-items:center;justify-content:center;">
+        <span style="font-size:18px;font-weight:700;color:rgba(255,255,255,0.2);text-transform:uppercase;letter-spacing:0.1em;">${esc(a.source)}</span>
+      </div>
+      <div style="position:absolute;bottom:0;left:0;right:0;padding:28px 24px 22px;background:linear-gradient(transparent,rgba(0,0,0,0.85));">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+          <span style="font-size:10.5px;font-weight:600;color:#fff;background:${catColor};padding:3px 8px;border-radius:4px;text-transform:uppercase;letter-spacing:0.04em;">${esc(a.source)}</span>
+          ${relTime ? `<span style="font-size:11px;color:rgba(255,255,255,0.6);">${relTime}</span>` : ''}
+        </div>
+        <div style="font-family:var(--serif);font-size:22px;font-weight:700;color:#fff;line-height:1.3;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;text-shadow:0 1px 3px rgba(0,0,0,0.5);">${esc(a.title)}</div>
+      </div>
+    </a>`;
+  }
+  // No image — gradient fallback hero
+  return `<a href="${esc(a.url)}" target="_blank" rel="noopener" class="news-card-hover"
+    style="display:block;text-decoration:none;position:relative;border-radius:14px;overflow:hidden;aspect-ratio:16/9;background:${NEWS_CAT_GRADIENTS[a.category]||'linear-gradient(135deg,#1a1a2e,#2d2d4e)'};">
+    <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:48px;opacity:0.08;">${NEWS_CAT_EMOJI[a.category]||'\u{1F4F0}'}</div>
+    <div style="position:absolute;bottom:0;left:0;right:0;padding:28px 24px 22px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-size:10.5px;font-weight:600;color:#fff;background:${catColor};padding:3px 8px;border-radius:4px;text-transform:uppercase;letter-spacing:0.04em;">${esc(a.source)}</span>
+        ${relTime ? `<span style="font-size:11px;color:rgba(255,255,255,0.6);">${relTime}</span>` : ''}
+      </div>
+      <div style="font-family:var(--serif);font-size:22px;font-weight:700;color:#fff;line-height:1.3;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;">${esc(a.title)}</div>
+    </div>
   </a>`;
+}
+
+/* ── Featured grid card (image top, text below) ── */
+function _newsFeaturedCard(a) {
+  const relTime = _newsRelativeTime(a.published);
+  const catColor = NEWS_CAT_COLORS[a.category] || '#6c8aff';
+  const imgHtml = a.image
+    ? `<div style="position:relative;width:100%;aspect-ratio:4/3;border-radius:10px;overflow:hidden;background:var(--surface-2);flex-shrink:0;">
+        <img src="${esc(a.image)}" alt="" style="width:100%;height:100%;object-fit:cover;display:block;" onerror="this.nextElementSibling.style.display='flex';this.style.display='none';">
+        <div style="display:none;width:100%;height:100%;position:absolute;top:0;left:0;background:${NEWS_CAT_GRADIENTS[a.category]||'linear-gradient(135deg,#1a1a2e,#2d2d4e)'};align-items:center;justify-content:center;">
+          <span style="font-size:14px;font-weight:600;color:rgba(255,255,255,0.18);text-transform:uppercase;letter-spacing:0.08em;">${esc(a.source)}</span>
+        </div>
+       </div>`
+    : `<div style="width:100%;aspect-ratio:4/3;border-radius:10px;background:${NEWS_CAT_GRADIENTS[a.category]||'linear-gradient(135deg,#1a1a2e,#2d2d4e)'};display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+        <span style="font-size:14px;font-weight:600;color:rgba(255,255,255,0.15);text-transform:uppercase;letter-spacing:0.08em;">${esc(a.source)}</span>
+       </div>`;
+  return `<a href="${esc(a.url)}" target="_blank" rel="noopener" class="news-card-hover"
+    style="display:block;text-decoration:none;">
+    ${imgHtml}
+    <div style="padding:10px 2px 0;">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;">
+        <span style="font-size:10px;font-weight:600;color:${catColor};text-transform:uppercase;letter-spacing:0.04em;">${esc(a.source)}</span>
+        ${relTime ? `<span style="font-size:10px;color:var(--text-3);">\u00b7 ${relTime}</span>` : ''}
+      </div>
+      <div style="font-size:14px;font-weight:600;color:var(--text);line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">${esc(a.title)}</div>
+    </div>
+  </a>`;
+}
+
+/* ── Compact list item (thumbnail left, text right) ── */
+function _newsCompactItem(a) {
+  const relTime = _newsRelativeTime(a.published);
+  const catColor = NEWS_CAT_COLORS[a.category] || '#6c8aff';
+  const thumbHtml = a.image
+    ? `<div style="width:64px;height:64px;border-radius:8px;overflow:hidden;background:var(--surface-2);flex-shrink:0;">
+        <img src="${esc(a.image)}" alt="" style="width:100%;height:100%;object-fit:cover;display:block;" onerror="this.nextElementSibling.style.display='flex';this.style.display='none';">
+        <div style="display:none;width:100%;height:100%;background:${NEWS_CAT_GRADIENTS[a.category]||'linear-gradient(135deg,#1a1a2e,#2d2d4e)'};align-items:center;justify-content:center;">
+          <span style="font-size:9px;font-weight:600;color:rgba(255,255,255,0.2);text-transform:uppercase;">${esc(a.source.slice(0,6))}</span>
+        </div>
+       </div>`
+    : `<div style="width:64px;height:64px;border-radius:8px;background:${NEWS_CAT_GRADIENTS[a.category]||'linear-gradient(135deg,#1a1a2e,#2d2d4e)'};display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+        <span style="font-size:9px;font-weight:600;color:rgba(255,255,255,0.15);text-transform:uppercase;letter-spacing:0.04em;">${esc(a.source.slice(0,8))}</span>
+       </div>`;
+  return `<a href="${esc(a.url)}" target="_blank" rel="noopener" class="news-compact-item"
+    style="display:flex;gap:12px;align-items:center;text-decoration:none;padding:10px 0;border-bottom:1px solid var(--border);">
+    ${thumbHtml}
+    <div style="flex:1;min-width:0;">
+      <div style="font-size:13.5px;font-weight:600;color:var(--text);line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:4px;">${esc(a.title)}</div>
+      <div style="display:flex;align-items:center;gap:5px;">
+        <span style="font-size:10px;font-weight:600;color:${catColor};text-transform:uppercase;letter-spacing:0.03em;">${esc(a.source)}</span>
+        ${relTime ? `<span style="font-size:10px;color:var(--text-3);">\u00b7 ${relTime}</span>` : ''}
+      </div>
+    </div>
+  </a>`;
+}
+
+/* ── Category section header ── */
+function _newsCatHeader(cat) {
+  const color = NEWS_CAT_COLORS[cat] || '#6c8aff';
+  const emoji = NEWS_CAT_EMOJI[cat] || '\u{1F4F0}';
+  return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;padding-top:8px;">
+    <div style="width:3px;height:18px;border-radius:2px;background:${color};"></div>
+    <span style="font-size:13px;">${emoji}</span>
+    <span style="font-size:11.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-2);">${esc(cat)}</span>
+  </div>`;
 }
 
 function _renderNewsCats(bycat) {
@@ -2581,14 +2702,21 @@ function _renderNewsCats(bycat) {
   const allCats = ['All', ...ordered, ...extra];
   return allCats.map(c => {
     const active = newsActiveCat === c;
-    return `<button onclick="newsSetCat('${c}')" style="padding:5px 14px;border-radius:100px;font-family:var(--font);font-size:12.5px;font-weight:${active?600:400};cursor:pointer;white-space:nowrap;transition:all .12s;border:1px solid ${active?'var(--text)':'var(--border)'};background:${active?'var(--text)':'transparent'};color:${active?'#fff':'var(--text-2)'};">${c==='All'?'All':c}</button>`;
+    const color = NEWS_CAT_COLORS[c] || 'var(--text)';
+    return `<button onclick="newsSetCat('${c}')" style="padding:5px 14px;border-radius:100px;font-family:var(--font);font-size:12px;font-weight:${active?600:400};cursor:pointer;white-space:nowrap;transition:all .15s;border:1px solid ${active?color:'var(--border)'};background:${active?color:'transparent'};color:${active?'#fff':'var(--text-2)'};">${c==='All'?'All':c}</button>`;
   }).join('');
 }
 
 function newsSetCat(cat) {
   newsActiveCat = cat;
+  _newsExpandedCats = {};
   const catsEl = document.getElementById('news-cats');
   if (catsEl) catsEl.innerHTML = _renderNewsCats(_newsBycat);
+  _renderNewsGrid();
+}
+
+function newsToggleCat(cat) {
+  _newsExpandedCats[cat] = !_newsExpandedCats[cat];
   _renderNewsGrid();
 }
 
@@ -2596,43 +2724,67 @@ function _renderNewsGrid() {
   const grid = document.getElementById('news-grid');
   if (!grid) return;
   const bycat = _newsBycat;
-  const cats = newsActiveCat === 'All'
-    ? NEWS_CAT_ORDER.filter(c=>bycat[c]).concat(Object.keys(bycat).filter(c=>!NEWS_CAT_ORDER.includes(c)))
-    : [newsActiveCat];
+  const allArticles = [];
+  const orderedCats = NEWS_CAT_ORDER.filter(c=>bycat[c]).concat(Object.keys(bycat).filter(c=>!NEWS_CAT_ORDER.includes(c)));
+
+  // Flatten all for hero/featured selection
+  for (const cat of orderedCats) {
+    for (const a of (bycat[cat]||[])) allArticles.push(a);
+  }
 
   let html = '';
-  let isFirst = true;
-  for (const cat of cats) {
-    const arts = bycat[cat] || [];
-    if (!arts.length) continue;
 
-    html += `<div style="margin-bottom:40px;">`;
-
-    if (newsActiveCat === 'All') {
-      html += `<div style="font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);margin-bottom:14px;">${esc(cat)}</div>`;
+  if (newsActiveCat === 'All') {
+    // ── HERO STORY ──
+    const heroArticle = allArticles.find(a => a.image) || allArticles[0];
+    if (heroArticle) {
+      html += `<div style="margin-bottom:32px;" class="news-fade-in">${_newsHeroCard(heroArticle)}</div>`;
     }
 
-    if (isFirst && newsActiveCat === 'All') {
-      // Hero: big left + 3 stacked right
-      html += `<div style="display:grid;grid-template-columns:1.6fr 1fr;gap:24px;margin-bottom:24px;">
-        <div>${_newsCardHtml(arts[0], 'hero')}</div>
-        <div style="display:flex;flex-direction:column;gap:20px;">${arts.slice(1,4).map(a=>_newsCardHtml(a,'normal')).join('')}</div>
+    // ── FEATURED GRID (next 4-6 articles with images) ──
+    const featuredPool = allArticles.filter(a => a !== heroArticle);
+    const featured = featuredPool.slice(0, 6);
+    if (featured.length) {
+      html += `<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:20px;margin-bottom:40px;" class="news-fade-in news-fade-delay-1">
+        ${featured.map(a => `<div>${_newsFeaturedCard(a)}</div>`).join('')}
       </div>`;
-      if (arts.length > 4) {
-        html += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:20px;">${arts.slice(4).map(a=>_newsCardHtml(a,'normal')).join('')}</div>`;
-      }
-      isFirst = false;
-    } else if (newsActiveCat !== 'All') {
-      // Single category: hero + grid
-      html += `<div style="margin-bottom:24px;">${_newsCardHtml(arts[0],'hero')}</div>`;
-      if (arts.length > 1) {
-        html += `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:20px;">${arts.slice(1).map(a=>_newsCardHtml(a,'medium')).join('')}</div>`;
-      }
-    } else {
-      html += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:20px;">${arts.map(a=>_newsCardHtml(a,'normal')).join('')}</div>`;
-      isFirst = false;
     }
-    html += `</div>`;
+
+    // ── CATEGORY SECTIONS ──
+    const usedArticles = new Set([heroArticle, ...featured]);
+    for (const cat of orderedCats) {
+      const catArts = (bycat[cat]||[]).filter(a => !usedArticles.has(a));
+      if (!catArts.length) continue;
+
+      const maxShow = _newsExpandedCats[cat] ? catArts.length : 4;
+      const visible = catArts.slice(0, maxShow);
+      const hasMore = catArts.length > 4 && !_newsExpandedCats[cat];
+
+      html += `<div style="margin-bottom:32px;border-top:1px solid var(--border);padding-top:16px;" class="news-fade-in">`;
+      html += _newsCatHeader(cat);
+      html += `<div>${visible.map(a => _newsCompactItem(a)).join('')}</div>`;
+      if (hasMore) {
+        html += `<button onclick="newsToggleCat('${cat}')" style="display:block;margin-top:8px;padding:6px 0;background:none;border:none;color:var(--accent);font-family:var(--font);font-size:12px;font-weight:500;cursor:pointer;transition:opacity .15s;" onmouseover="this.style.opacity='0.7'" onmouseout="this.style.opacity='1'">Show ${catArts.length - 4} more \u2192</button>`;
+      }
+      html += `</div>`;
+    }
+  } else {
+    // ── SINGLE CATEGORY VIEW ──
+    const arts = bycat[newsActiveCat] || [];
+    if (arts.length) {
+      html += `<div style="margin-bottom:28px;" class="news-fade-in">${_newsHeroCard(arts[0])}</div>`;
+      if (arts.length > 1) {
+        const gridArts = arts.slice(1, 5);
+        html += `<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:20px;margin-bottom:32px;" class="news-fade-in news-fade-delay-1">
+          ${gridArts.map(a => `<div>${_newsFeaturedCard(a)}</div>`).join('')}
+        </div>`;
+      }
+      if (arts.length > 5) {
+        html += `<div style="border-top:1px solid var(--border);padding-top:16px;" class="news-fade-in news-fade-delay-2">`;
+        html += arts.slice(5).map(a => _newsCompactItem(a)).join('');
+        html += `</div>`;
+      }
+    }
   }
 
   if (!html) html = `<div style="color:var(--text-3);font-size:13px;padding:20px 0;">No articles in this category.</div>`;
@@ -2643,26 +2795,50 @@ async function renderNews() {
   setTopbar("Today's World", '');
   hideInput();
   newsActiveCat = 'All';
+  _newsExpandedCats = {};
 
   const todayStr = new Date().toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric'});
 
   $('content').innerHTML = `
-    <div style="max-width:980px;" class="fade-up">
-      <div style="padding:22px 28px 20px;border-bottom:1px solid var(--border);">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
-          <div style="font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--text-3);">${todayStr} · Morning Briefing</div>
-          <button onclick="newsRefresh()" style="padding:5px 12px;border:1px solid var(--border-mid);border-radius:7px;background:none;color:var(--text-2);font-family:var(--font);font-size:12px;cursor:pointer;transition:all .12s;" onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background='none'">↻ Refresh</button>
+    <style>
+      .news-card-hover { transition: transform 0.2s var(--ease), box-shadow 0.2s var(--ease); border-radius: 14px; }
+      .news-card-hover:hover { transform: translateY(-3px); box-shadow: 0 8px 30px rgba(0,0,0,0.35); }
+      .news-compact-item { transition: background 0.15s; border-radius: 8px; }
+      .news-compact-item:hover { background: var(--surface); }
+      .news-fade-in { animation: newsFadeIn 0.5s var(--ease) both; }
+      .news-fade-delay-1 { animation-delay: 0.1s; }
+      .news-fade-delay-2 { animation-delay: 0.2s; }
+      @keyframes newsFadeIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+      .news-summary-card { background: linear-gradient(135deg, rgba(108,138,255,0.08), rgba(88,86,214,0.06), rgba(108,138,255,0.03)); border: 1px solid rgba(108,138,255,0.12); border-radius: 14px; padding: 22px 24px; }
+      .news-summary-card .prose { font-size: 13.5px; color: var(--text-2); line-height: 1.7; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+      .news-summary-card .prose p { margin-bottom: 4px; }
+    </style>
+    <div style="max-width:720px;margin:0 auto;padding:0 20px;" class="fade-up">
+
+      <!-- Summary Card -->
+      <div style="padding:24px 0 20px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+          <div>
+            <div style="font-size:10.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--text-3);margin-bottom:4px;">${todayStr}</div>
+            <div style="font-family:var(--serif);font-size:22px;font-weight:700;color:var(--text);letter-spacing:-0.3px;">Today's Headlines</div>
+          </div>
+          <button onclick="newsRefresh()" style="padding:6px 14px;border:1px solid var(--border-mid);border-radius:8px;background:none;color:var(--text-2);font-family:var(--font);font-size:12px;cursor:pointer;transition:all .15s;display:flex;align-items:center;gap:5px;" onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background='none'">\u21bb Refresh</button>
         </div>
-        <div id="news-brief" style="color:var(--text-2);line-height:1.7;">
-          <div class="skeleton skeleton-text long"></div><div class="skeleton skeleton-text medium"></div>
+        <div id="news-brief" class="news-summary-card">
+          <div class="skeleton skeleton-text long"></div><div class="skeleton skeleton-text medium"></div><div class="skeleton skeleton-text short"></div>
         </div>
       </div>
-      <div id="news-cats" style="display:flex;gap:6px;padding:10px 24px;border-bottom:1px solid var(--border);overflow-x:auto;scrollbar-width:none;">
+
+      <!-- Category Tabs -->
+      <div id="news-cats" style="display:flex;gap:6px;padding:12px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;">
         ${[1,2,3,4,5].map(()=>'<div class="skeleton" style="width:60px;height:28px;border-radius:14px;flex-shrink:0;"></div>').join('')}
       </div>
-      <div id="news-grid" style="padding:20px 24px 40px;">
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;">
-          ${[1,2,3,4,5,6,7,8].map(()=>'<div class="skeleton-card"><div class="skeleton skeleton-block"></div><div class="skeleton skeleton-text medium"></div><div class="skeleton skeleton-text short"></div></div>').join('')}
+
+      <!-- News Grid -->
+      <div id="news-grid" style="padding:24px 0 48px;">
+        <div style="margin-bottom:24px;"><div class="skeleton" style="width:100%;aspect-ratio:16/9;border-radius:14px;"></div></div>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:16px;">
+          ${[1,2,3,4].map(()=>'<div><div class="skeleton" style="width:100%;aspect-ratio:4/3;border-radius:10px;margin-bottom:8px;"></div><div class="skeleton skeleton-text medium"></div><div class="skeleton skeleton-text short"></div></div>').join('')}
         </div>
       </div>
     </div>`;
@@ -2677,12 +2853,18 @@ async function renderNews() {
     const bycat = d.by_category || {};
     _newsBycat = bycat;
 
-    // Update briefing (render as markdown)
+    // Update AI summary card
     const briefEl = document.getElementById('news-brief');
-    if (briefEl) briefEl.innerHTML = sumData.summary ? `<div class="prose" style="font-size:13.5px;">${marked.parse(sumData.summary)}</div>` : 'Top stories from around the world.';
+    if (briefEl) {
+      if (sumData.summary) {
+        briefEl.innerHTML = `<div class="prose">${marked.parse(sumData.summary)}</div>`;
+      } else {
+        briefEl.innerHTML = `<div style="font-size:13.5px;color:var(--text-3);line-height:1.6;">Top stories from around the world.</div>`;
+      }
+    }
 
     if (!Object.keys(bycat).length) {
-      document.getElementById('news-grid').innerHTML = `<div style="color:var(--text-2);padding:20px 0;">No news available — check your network connection.</div>`;
+      document.getElementById('news-grid').innerHTML = `<div style="color:var(--text-2);padding:20px 0;">No news available \u2014 check your network connection.</div>`;
       return;
     }
 
@@ -2702,6 +2884,7 @@ async function renderNews() {
 async function newsRefresh() {
   newsActiveCat = 'All';
   _newsBycat = {};
+  _newsExpandedCats = {};
   invalidateCache('/news');
   invalidateCache('/news/summary');
   // Clear server cache via refresh=true, then re-render

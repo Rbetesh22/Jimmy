@@ -65,13 +65,18 @@ except ValueError:
 JIMMY_USER_NAME = os.getenv("JIMMY_USER_NAME", "Ralph")
 JIMMY_USER_BIO = os.getenv(
     "JIMMY_USER_BIO",
-    "Columbia CS student. Current courses: Operating Systems, Computer Networks, "
-    "Algorithms, Financial Accounting. Starting at Datadog (query engineering) Jul 2026."
+    "Ralph Betesh. Graduated Columbia University May 2025 with a CS degree. "
+    "Starting at Datadog July 2026 as a software engineer. Lives in NYC. "
+    "Member of FIJI fraternity at Columbia."
 )
 JIMMY_USER_CONTEXT = os.getenv(
     "JIMMY_USER_CONTEXT",
-    "Jewish, observant, interested in Torah study. "
-    "Preparing for Datadog by studying Apache Arrow, Trino, ClickHouse, Apache Calcite."
+    "Sephardic Jewish, observant — keeps Shabbat, Torah study is a core interest. "
+    "Past Columbia courses (Operating Systems, Computer Networks, Financial Accounting, "
+    "Analysis of Algorithms) are ALL COMPLETED and historical — not current work. "
+    "Current interests: AI/ML, startups, Torah, fitness, reading. "
+    "Built Jimmy (this app) as a personal project. "
+    "Preparing for Datadog by studying observability, distributed systems, and infrastructure."
 )
 
 JIMMY_DATA_DIR.mkdir(exist_ok=True)

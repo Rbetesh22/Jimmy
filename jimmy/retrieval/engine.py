@@ -40,8 +40,11 @@ _QUERY_CACHE: dict[str, tuple[list[str], float]] = {}
 _QUERY_CACHE_TTL = 86400  # 24 hours
 
 def _user_prompt_context() -> str:
-    """Return a compact user bio string for LLM prompts."""
-    return f"{JIMMY_USER_NAME} — {JIMMY_USER_BIO}"
+    """Return a rich user context string for LLM prompts."""
+    return (
+        f"{JIMMY_USER_NAME} — {JIMMY_USER_BIO}\n"
+        f"Life context: {JIMMY_USER_CONTEXT}"
+    )
 
 SOURCE_ICONS = {
     "canvas": "🎓",
@@ -259,34 +262,38 @@ def _digest_source_score(meta: dict) -> float:
         except Exception:
             pass
 
+    # Hard cutoff: anything older than 90 days gets max score of 0.5
+    # (personal notes exempt — they may contain evergreen context)
+    hard_cap = 0.5 if (days_old > 90 and source not in {"note", "apple_notes", "voice_memo"}) else 999.0
+
     if source in {"note", "apple_notes", "voice_memo", "granola"}:
         if days_old <= 7:
-            return 2.5
+            return min(2.5, hard_cap)
         if days_old <= 21:
-            return 2.0
-        return 1.1
+            return min(2.0, hard_cap)
+        return min(1.1, hard_cap)
     if source in {"notion", "file", "gdrive", "web"}:
         if days_old <= 7:
-            return 2.2
+            return min(2.2, hard_cap)
         if days_old <= 21:
-            return 1.65
-        return 1.0
+            return min(1.65, hard_cap)
+        return min(1.0, hard_cap)
     if source == "canvas":
         # All canvas content is historical (graduated May 2025) — nearly exclude
         return 0.1
     if source in {"readwise", "kindle", "goodreads", "podcast", "youtube"}:
         if days_old <= 7:
-            return 1.4
+            return min(1.4, hard_cap)
         if days_old <= 30:
-            return 0.9
-        return 0.45
+            return min(0.9, hard_cap)
+        return min(0.45, hard_cap)
     if source in {"claude_chat", "chatgpt_chat", "coding_session"}:
         if days_old <= 7:
-            return 2.0
+            return min(2.0, hard_cap)
         if days_old <= 21:
-            return 1.5
-        return 0.9
-    return 0.65
+            return min(1.5, hard_cap)
+        return min(0.9, hard_cap)
+    return min(0.65, hard_cap)
 
 
 def _digest_item_excluded(meta: dict) -> bool:
@@ -307,6 +314,16 @@ def _digest_item_excluded(meta: dict) -> bool:
     # Old passive course files are usually misleading in the digest.
     if source == "canvas" and _digest_source_score(meta) < 0.5:
         return True
+    # Exclude content older than 120 days unless it's personal notes
+    from datetime import date as _date_exc
+    _exc_date_str = _extract_recent_activity_date(meta) or _extract_date(meta)
+    if _exc_date_str and source not in {"note", "apple_notes", "voice_memo"}:
+        try:
+            _exc_days = (_date_exc.today() - _date_exc.fromisoformat(_exc_date_str)).days
+            if _exc_days > 120:
+                return True
+        except Exception:
+            pass
     return False
 
 
@@ -365,10 +382,9 @@ def _recency_weight(meta: dict) -> float:
     if days <= 7:   return 1.40   # last week — strongest boost
     if days < 30:   return 1.20
     if days < 90:   return 1.05
-    if days < 180:  return 0.95
-    if days < 365:  return 0.85
-    if days < 730:  return 0.70
-    return 0.55
+    if days < 180:  return 0.70   # 3-6 months — noticeable penalty
+    if days < 365:  return 0.30   # 6-12 months — steep penalty
+    return 0.10                   # >1 year — nearly excluded
 
 
 def _rerank(
@@ -1226,6 +1242,9 @@ class JimmyEngine:
             "technology science software engineering AI machine learning",
             "business strategy product market startup",
             "project work engineering system design personal notes goals",
+            "this week today yesterday recently new update",
+            "current working on now latest progress",
+            "recent notes thoughts decisions plans",
         ]
         # Run all seed queries in parallel — use vector-only search to avoid BM25 rebuild hang
         def _vec_search(query: str, n: int = 40):
@@ -1317,35 +1336,41 @@ class JimmyEngine:
 
         raw = self._chat(
             f"You are Jimmy, {JIMMY_USER_NAME}'s personal intelligence assistant. Today is {today} ({daypart}).\n"
-            f"{_user_prompt_context()}. {JIMMY_USER_NAME} graduated from Columbia in May 2025 and now works at Datadog as a software engineer. "
-            f"Any course material (OS, Algorithms, Financial Accounting, Computer Networks) is HISTORICAL — not current work. "
-            f"His current life is: Datadog engineering, personal projects, self-directed learning.\n\n"
+            f"{_user_prompt_context()}\n\n"
             f"CURRENT CONTEXT:\n"
             f"- Today's focus: {today_focus or 'None'}\n"
             f"- Topics on deck: {today_topics or 'None'}\n\n"
             f"NEWS CONTEXT:\n{news_text or 'None.'}\n\n"
             f"MEDIA RECS:\n{media_block or 'None.'}\n\n"
-            f"Write a SHORT, punchy daily briefing (200 words MAX). Think smart friend who actually read his stuff, not generic AI summary.\n\n"
-            f"STRUCTURE (use these exact headers):\n\n"
-            f"## What You Were Just Working On\n"
-            f"1-2 sentences. Reference SPECIFIC files, notes, or docs by name from the sources below. "
-            f"Say what the document/note is actually about. Be concrete: 'Your note on X talks about Y' not 'You have been exploring various topics.'\n\n"
-            f"## One Thing Worth Knowing\n"
-            f"1-2 sentences. Pick ONE idea from recent sources and explain it simply. Make it feel like a useful insight, not a textbook definition.\n\n"
-            f"## What To Do Next\n"
-            f"1 sentence. One specific, actionable next step tied to something in his actual notes or work.\n\n"
-            f"RULES:\n"
-            f"- 200 words MAXIMUM. Shorter is better.\n"
-            f"- Reference specific document/note titles from the sources — do not be vague\n"
-            f"- NEVER reference old Columbia courses as current work\n"
+            f"Write a daily briefing in MORNING BREW style — casual, punchy, a bit witty. "
+            f"Like a smart friend texting you, not a corporate briefing. 150-200 words MAX.\n\n"
+            f"TONE RULES:\n"
+            f"- Write like Morning Brew. Casual. Punchy. A bit witty.\n"
+            f"- Use second person ('you') throughout\n"
+            f"- Short sentences. Sentence fragments OK.\n"
+            f"- Name the ACTUAL document, note, or file — be specific\n"
+            f"- NO corporate speak. Never say 'it is worth noting', 'this underscores', 'it is important to', 'delving into'\n"
+            f"- Light humor if it fits naturally. Don't force it.\n"
+            f"- Headers should be catchy and specific, not generic\n\n"
+            f"STRUCTURE (use 3 headers — make them catchy, NOT the generic ones below):\n\n"
+            f"## [Catchy header about what they were working on]\n"
+            f"1-2 sentences. Name the specific file/note/doc. Say what it's actually about.\n\n"
+            f"## [Catchy header about one insight]\n"
+            f"1-2 sentences. ONE idea from recent sources, explained simply. Make it land.\n\n"
+            f"## [Catchy header about next step]\n"
+            f"1 sentence. One specific, actionable thing tied to actual notes or work.\n\n"
+            f"HARD RULES:\n"
+            f"- 150-200 words. Shorter is better.\n"
+            f"- NEVER reference old Columbia courses (OS, Algorithms, Networks, Accounting) as current work — they are DONE\n"
+            f"- If you see contradictory information across different dates, ALWAYS prefer the most recent version. "
+            f"Old plans, decisions, or preferences may have been superseded.\n"
             f"- NO calendar events, exam dates, deadlines, meetings\n"
             f"- NO bullet points, NO emojis, NO URLs, NO citations like [1]\n"
             f"- NO greetings ('Good morning' etc)\n"
             f"- NO meta-phrases ('Based on your knowledge base', 'According to your notes')\n"
-            f"- Write in second person, clean prose\n"
             f"- Grounded ONLY in the sources below — do not invent\n"
-            f"- If news context exists, weave in ONE relevant headline naturally (do not create a separate news section)\n"
-            f"- If a media rec fits, mention it in one sentence at the end. Otherwise skip.\n\n"
+            f"- If news context exists, weave in ONE relevant headline naturally (no separate news section)\n"
+            f"- If a media rec fits, drop it in one sentence at the end. Otherwise skip.\n\n"
             f"KNOWLEDGE SOURCES:\n{context}",
             max_tokens=800,
         )
@@ -1444,21 +1469,19 @@ class JimmyEngine:
         RALPH_CONTEXT = f"{_user_prompt_context()} {JIMMY_USER_CONTEXT}"
 
         fact_raw = self._chat(
-            f"You are a curious tutor. Today is {today}.\n\n"
+            f"You are Jimmy — think Morning Brew meets a smart friend who actually reads your stuff. Today is {today}.\n\n"
             f"{RALPH_CONTEXT}\n\n"
-            f"{JIMMY_USER_NAME} graduated Columbia May 2025 and now works at Datadog. "
-            f"Old courses (OS, Networks, Algorithms, etc.) are HISTORICAL, not current.\n\n"
-            f"Based on the excerpts below from his RECENT notes and content, surface ONE genuinely interesting "
-            f"fact or insight — something like 'here is something cool from your notes that you might not have noticed.' "
-            f"Prioritize his current work at Datadog, personal projects, recent reading, or Torah interests.\n\n"
+            f"Surface ONE genuinely surprising or fun fact from the RECENT notes below. "
+            f"The vibe: 'whoa, you probably didn't notice this in your own notes.' "
+            f"Prioritize current work, personal projects, recent reading, or Torah interests.\n\n"
             f"Rules:\n"
-            f"- 2-3 sentences max. No filler. No 'Did you know?'\n"
-            f"- Reference the specific note or source by name if possible\n"
+            f"- 2-3 sentences max. Casual, punchy, conversational.\n"
+            f"- Name the specific note or source\n"
             f"- Ground it in the sources — don't invent\n"
-            f"- Make it specific (names, numbers, places) not vague\n"
-            f"- Never reference calendar events, emails, or meeting titles\n"
-            f"- Do NOT reference old college courses as current work\n"
-            f"- No bullet points, no citations like [1]\n"
+            f"- Be specific (names, numbers, places) not vague\n"
+            f"- No 'Did you know?', no corporate speak, no filler\n"
+            f"- Old Columbia courses are DONE — never reference them as current\n"
+            f"- If you see contradictory info across dates, prefer the most recent version\n"
             f"- Return ONLY the fact text, nothing else\n\n"
             f"SOURCES:\n{fact_context}",
             max_tokens=200,
@@ -1466,22 +1489,19 @@ class JimmyEngine:
 
         # Generate vocab word — prioritize terms from recent content
         vocab_raw = self._chat(
-            f"You are a vocabulary tutor. Today is {today}.\n\n"
+            f"You are Jimmy's word-of-the-day bot — Morning Brew energy, not SAT prep. Today is {today}.\n\n"
             f"{RALPH_CONTEXT}\n\n"
-            f"{JIMMY_USER_NAME} graduated Columbia May 2025 and now works at Datadog.\n\n"
-            f"Based on the excerpts below from his RECENT notes and content, choose ONE interesting word "
-            f"that appears in or is directly relevant to what he is currently working on. "
-            f"Prioritize terms from his Datadog work (observability, monitoring, infrastructure, distributed systems) "
-            f"or his recent reading and personal projects. "
-            f"Also consider Torah/Hebrew terms if a strong one appears.\n\n"
+            f"Pick ONE interesting word from the RECENT notes below — something relevant to current work, "
+            f"recent reading, or Torah/Hebrew if a strong one shows up. Make it feel useful, not random.\n\n"
             f"Return a JSON object with exactly these fields (no markdown, no extra text):\n"
             f'{{"word": "...", "pronunciation": "...", "part_of_speech": "...", '
             f'"definition": "...", "etymology": "...", "example": "..."}}\n\n'
             f"Rules:\n"
-            f"- definition: one clear sentence\n"
-            f"- etymology: origin language + root meaning, 1 sentence\n"
-            f"- example: a sentence using the word in context of his current work or interests\n"
-            f"- No padding\n\n"
+            f"- definition: one punchy sentence, conversational tone\n"
+            f"- etymology: origin language + root meaning, 1 sentence — make it interesting\n"
+            f"- example: a sentence using the word in context of his current work or interests — keep it casual\n"
+            f"- If you see contradictory info across dates, prefer the most recent version\n"
+            f"- No padding, no filler\n\n"
             f"SOURCES:\n{vocab_context}",
             max_tokens=300,
         )
