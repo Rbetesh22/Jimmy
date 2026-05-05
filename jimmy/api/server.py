@@ -1661,6 +1661,9 @@ def news(refresh: bool = False):
         {"url": "https://www.espn.com/espn/rss/news", "category": "Sports", "label": "ESPN"},
         {"url": "https://www.espn.com/espn/rss/nba/news", "category": "Sports", "label": "ESPN NBA"},
         {"url": "https://www.espn.com/espn/rss/nfl/news", "category": "Sports", "label": "ESPN NFL"},
+        {"url": "https://www.espn.com/espn/rss/nhl/news", "category": "Sports", "label": "ESPN NHL"},
+        {"url": "https://www.nba.com/news/rss.xml", "category": "Sports", "label": "NBA.com"},
+        {"url": "https://www.nhl.com/rss/news.xml", "category": "Sports", "label": "NHL.com"},
         {"url": "https://feeds.bbci.co.uk/sport/rss.xml", "category": "Sports", "label": "BBC Sport"},
         {"url": "https://theathletic.com/feed/", "category": "Sports", "label": "The Athletic"},
     ]
@@ -1998,9 +2001,10 @@ def news_summary():
             f"## Markets & Tech\n"
             f"2-3 bullets on finance/markets and AI/tech. What moved, who launched what, what's the signal. Be concrete — numbers, names, companies.\n\n"
             f"## In the Game\n"
-            f"If sports stories exist, 1-2 sentences on the key result or storyline. If nothing notable, skip.\n\n"
-            f"Rules: Minimum 300 words. Be direct and specific. Write like a smart friend who reads everything, not a press release.",
-            max_tokens=800,
+            f"If sports stories exist, 2-3 sentences covering NBA, NHL, NFL, or other major sports. Scores, standings, trades, storylines. Be specific.\n\n"
+            f"Rules: Minimum 400 words. Be direct and specific. Write like a smart friend who reads everything, not a press release. "
+            f"Each section should feel substantive — this is the user's main news source.",
+            max_tokens=1200,
             tier="fast",
         )
 

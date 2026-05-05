@@ -2604,8 +2604,8 @@ function _newsHeroCard(a) {
     return `<a href="${esc(a.url)}" target="_blank" rel="noopener" class="news-card-hover"
       style="display:block;text-decoration:none;position:relative;border-radius:14px;overflow:hidden;aspect-ratio:16/9;background:var(--surface-2);">
       <img src="${esc(a.image)}" alt="" style="width:100%;height:100%;object-fit:cover;display:block;" onerror="this.parentElement.querySelector('.news-hero-fallback').style.display='flex';this.style.display='none';">
-      <div class="news-hero-fallback" style="display:none;width:100%;height:100%;position:absolute;top:0;left:0;background:${catColor};align-items:center;justify-content:center;">
-        <span style="font-size:22px;font-weight:800;color:rgba(255,255,255,0.9);text-transform:uppercase;letter-spacing:0.05em;">${esc(a.source)}</span>
+      <div class="news-hero-fallback" style="display:none;width:100%;height:100%;position:absolute;top:0;left:0;background:var(--surface-2);border-left:4px solid ${catColor};align-items:center;justify-content:center;">
+        <span style="font-size:14px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:0.06em;">${esc(a.source)}</span>
       </div>
       <div style="position:absolute;bottom:0;left:0;right:0;padding:24px 20px 18px;background:linear-gradient(0deg,rgba(0,0,0,0.92) 0%,rgba(0,0,0,0.6) 60%,transparent 100%);">
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
@@ -2616,16 +2616,15 @@ function _newsHeroCard(a) {
       </div>
     </a>`;
   }
-  // No image — solid category-colored background with large source text
+  // No image — clean dark surface with accent border, no garish color block
   return `<a href="${esc(a.url)}" target="_blank" rel="noopener" class="news-card-hover"
-    style="display:block;text-decoration:none;position:relative;border-radius:14px;overflow:hidden;aspect-ratio:16/9;background:${catColor};">
-    <div style="position:absolute;top:24px;right:20px;font-size:28px;font-weight:900;color:rgba(255,255,255,0.12);text-transform:uppercase;letter-spacing:0.05em;">${esc(a.source)}</div>
+    style="display:block;text-decoration:none;position:relative;border-radius:14px;overflow:hidden;aspect-ratio:16/9;background:var(--surface-2);border-left:4px solid ${catColor};">
     <div style="position:absolute;bottom:0;left:0;right:0;padding:24px 20px 18px;">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
-        <span style="font-size:10px;font-weight:700;color:${catColor};background:rgba(255,255,255,0.92);padding:2px 7px;border-radius:3px;text-transform:uppercase;letter-spacing:0.05em;">${esc(a.source)}</span>
-        ${relTime ? `<span style="font-size:10px;color:rgba(255,255,255,0.6);">${relTime}</span>` : ''}
+        <span style="font-size:10px;font-weight:700;color:${catColor};text-transform:uppercase;letter-spacing:0.05em;">${esc(a.source)}</span>
+        ${relTime ? `<span style="font-size:10px;color:var(--text-3);">${relTime}</span>` : ''}
       </div>
-      <div style="font-size:20px;font-weight:800;color:#fff;line-height:1.25;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;letter-spacing:-0.3px;">${esc(a.title)}</div>
+      <div style="font-size:20px;font-weight:800;color:var(--text);line-height:1.25;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;letter-spacing:-0.3px;">${esc(a.title)}</div>
     </div>
   </a>`;
 }
@@ -2637,13 +2636,11 @@ function _newsFeaturedCard(a) {
   const imgHtml = a.image
     ? `<div style="position:relative;width:100%;aspect-ratio:3/2;border-radius:10px;overflow:hidden;background:var(--surface-2);flex-shrink:0;">
         <img src="${esc(a.image)}" alt="" style="width:100%;height:100%;object-fit:cover;display:block;" onerror="this.nextElementSibling.style.display='flex';this.style.display='none';">
-        <div style="display:none;width:100%;height:100%;position:absolute;top:0;left:0;background:${catColor};align-items:center;justify-content:center;">
-          <span style="font-size:16px;font-weight:800;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.05em;">${esc(a.source)}</span>
+        <div style="display:none;width:100%;height:100%;position:absolute;top:0;left:0;background:var(--surface-2);border-left:4px solid ${catColor};align-items:center;justify-content:center;">
+          <span style="font-size:12px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:0.05em;">${esc(a.source)}</span>
         </div>
        </div>`
-    : `<div style="width:100%;aspect-ratio:3/2;border-radius:10px;background:${catColor};display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-        <span style="font-size:16px;font-weight:800;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.05em;">${esc(a.source)}</span>
-       </div>`;
+    : '';
   return `<a href="${esc(a.url)}" target="_blank" rel="noopener" class="news-card-hover"
     style="display:block;text-decoration:none;border-left:3px solid ${catColor};padding-left:0;border-radius:10px;overflow:hidden;">
     ${imgHtml}
@@ -2664,12 +2661,12 @@ function _newsCompactItem(a) {
   const thumbHtml = a.image
     ? `<div style="width:56px;height:56px;border-radius:6px;overflow:hidden;background:var(--surface-2);flex-shrink:0;">
         <img src="${esc(a.image)}" alt="" style="width:100%;height:100%;object-fit:cover;display:block;" onerror="this.nextElementSibling.style.display='flex';this.style.display='none';">
-        <div style="display:none;width:100%;height:100%;background:${catColor};align-items:center;justify-content:center;">
-          <span style="font-size:10px;font-weight:800;color:rgba(255,255,255,0.85);text-transform:uppercase;">${esc(a.source.slice(0,6))}</span>
+        <div style="display:none;width:100%;height:100%;background:var(--surface-2);align-items:center;justify-content:center;">
+          <span style="font-size:9px;font-weight:700;color:var(--text-3);text-transform:uppercase;">${esc(a.source.slice(0,6))}</span>
         </div>
        </div>`
-    : `<div style="width:56px;height:56px;border-radius:6px;background:${catColor};display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-        <span style="font-size:10px;font-weight:800;color:rgba(255,255,255,0.85);text-transform:uppercase;letter-spacing:0.03em;">${esc(a.source.slice(0,8))}</span>
+    : `<div style="width:56px;height:56px;border-radius:6px;background:var(--surface-2);border-left:3px solid ${catColor};display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+        <span style="font-size:9px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:0.03em;">${esc(a.source.slice(0,8))}</span>
        </div>`;
   return `<a href="${esc(a.url)}" target="_blank" rel="noopener" class="news-compact-item"
     style="display:flex;gap:10px;align-items:center;text-decoration:none;padding:8px 0;border-bottom:1px solid var(--border);border-left:3px solid ${catColor};padding-left:10px;margin-left:-2px;">
