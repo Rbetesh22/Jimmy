@@ -1678,17 +1678,24 @@ def news(refresh: bool = False):
                 desc = ""
                 if desc_el is not None and desc_el.text:
                     desc = re.sub(r"<[^>]+>", " ", desc_el.text).strip()[:200]
-                # Try to get image — cascade through multiple methods
+                # Try to get image — cascade through multiple methods (prefer larger)
                 image = ""
-                # 1. media:thumbnail (Yahoo Media RSS)
-                media_thumb = item.find("media:thumbnail", ns)
-                if media_thumb is not None:
-                    image = media_thumb.get("url", "")
-                # 2. media:content
+                # 1. media:content — find largest image if multiple exist
+                best_width = 0
+                for mc in item.findall("media:content", ns):
+                    if "image" in (mc.get("type") or "image"):
+                        w = int(mc.get("width") or "0") if mc.get("width", "").isdigit() else 0
+                        url = mc.get("url", "")
+                        if url and w > best_width:
+                            image = url
+                            best_width = w
+                        elif url and not image:
+                            image = url
+                # 2. media:thumbnail (often smaller, use as fallback)
                 if not image:
-                    media_content = item.find("media:content", ns)
-                    if media_content is not None and "image" in (media_content.get("type") or "image"):
-                        image = media_content.get("url", "")
+                    media_thumb = item.find("media:thumbnail", ns)
+                    if media_thumb is not None:
+                        image = media_thumb.get("url", "")
                 # 3. enclosure
                 if not image:
                     enclosure = item.find("enclosure")
@@ -1839,47 +1846,58 @@ def news(refresh: bool = False):
             deduped.append(a)
     articles = deduped
 
-    # og:image fetching moved to background — return articles immediately, backfill images later
+    # Fetch og:image for articles missing images — inline for visible articles, background for rest
     def _fetch_og_image(article: dict) -> None:
         if article.get("image"):
             return
         try:
-            with httpx.Client(timeout=4, follow_redirects=True) as c:
+            with httpx.Client(timeout=3, follow_redirects=True) as c:
                 resp = c.get(article["url"], headers={"User-Agent": UA})
                 if resp.status_code == 200:
-                    m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', resp.text[:15000])
+                    html = resp.text[:20000]
+                    # Try og:image first
+                    m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html)
                     if not m:
-                        m = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', resp.text[:15000])
+                        m = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html)
+                    # Try twitter:image as fallback
+                    if not m:
+                        m = re.search(r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']', html)
                     if m:
-                        article["image"] = m.group(1)
+                        img = m.group(1)
+                        # Skip tiny/tracking images
+                        if not any(skip in img.lower() for skip in ['1x1', 'pixel', 'track', 'spacer', 'blank']):
+                            article["image"] = img
         except Exception:
             pass
 
-    def _backfill_og_images(arts: list[dict], cp: Path) -> None:
-        """Background: fetch og:image for articles missing images, then update disk cache."""
-        no_img = [a for a in arts if not a.get("image")]
-        if not no_img:
-            return
-        with ThreadPoolExecutor(max_workers=10) as pool:
-            list(pool.map(_fetch_og_image, no_img[:30]))
-        try:
-            if cp.exists():
-                cached = json.loads(cp.read_text())
-                cached["articles"] = arts
-                by_cat: dict[str, list] = {}
-                cc: dict[str, int] = {}
-                for a in arts:
-                    cat = a["category"]
-                    if cc.get(cat, 0) < 10:
-                        by_cat.setdefault(cat, []).append(a)
-                        cc[cat] = cc.get(cat, 0) + 1
-                cached["by_category"] = by_cat
-                cp.write_text(json.dumps(cached))
-        except Exception:
-            pass
-
-    # Fire-and-forget background thread for og:image backfill
-    threading.Thread(target=_backfill_og_images, args=(articles, cache_path), daemon=True).start()
+    # Fetch images INLINE for top articles (hero + featured) so they load with images
+    no_image = [a for a in articles if not a.get("image")]
+    if no_image:
+        inline_batch = no_image[:20]  # Top articles users actually see
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            list(pool.map(_fetch_og_image, inline_batch))
+        # Background for remaining
+        remaining = no_image[20:]
+        if remaining:
+            def _backfill(arts, cp):
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    list(pool.map(_fetch_og_image, arts))
+                try:
+                    if cp.exists():
+                        cached = json.loads(cp.read_text())
+                        cached["articles"] = articles
+                        by_cat = {}
+                        cc = {}
+                        for a in articles:
+                            cat = a["category"]
+                            if cc.get(cat, 0) < 10:
+                                by_cat.setdefault(cat, []).append(a)
+                                cc[cat] = cc.get(cat, 0) + 1
+                        cached["by_category"] = by_cat
+                        cp.write_text(json.dumps(cached))
+                except Exception:
+                    pass
+            threading.Thread(target=_backfill, args=(remaining, cache_path), daemon=True).start()
 
     # Group by category (cap 10 per category)
     by_category: dict[str, list] = {}

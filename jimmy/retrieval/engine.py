@@ -1342,16 +1342,15 @@ class JimmyEngine:
             f"- Topics on deck: {today_topics or 'None'}\n\n"
             f"NEWS CONTEXT:\n{news_text or 'None.'}\n\n"
             f"MEDIA RECS:\n{media_block or 'None.'}\n\n"
-            f"Write a daily briefing in MORNING BREW style — casual, punchy, a bit witty. "
-            f"Like a smart friend texting you, not a corporate briefing. 150-200 words MAX.\n\n"
+            f"Write a short daily briefing. Warm, clear, conversational — like a smart friend catching you up. "
+            f"Not corporate, not try-hard funny. Just natural. 150-200 words MAX.\n\n"
             f"TONE RULES:\n"
-            f"- Write like Morning Brew. Casual. Punchy. A bit witty.\n"
-            f"- Use second person ('you') throughout\n"
-            f"- Short sentences. Sentence fragments OK.\n"
+            f"- Clean, warm, conversational prose. Second person ('you').\n"
+            f"- Short sentences. Be direct.\n"
             f"- Name the ACTUAL document, note, or file — be specific\n"
-            f"- NO corporate speak. Never say 'it is worth noting', 'this underscores', 'it is important to', 'delving into'\n"
-            f"- Light humor if it fits naturally. Don't force it.\n"
-            f"- Headers should be catchy and specific, not generic\n\n"
+            f"- NO corporate speak ('it is worth noting', 'this underscores', 'delving into')\n"
+            f"- NO forced humor or puns. Just be clear and useful.\n"
+            f"- Headers should be specific to the content, not generic\n\n"
             f"STRUCTURE (use 3 headers — make them catchy, NOT the generic ones below):\n\n"
             f"## [Catchy header about what they were working on]\n"
             f"1-2 sentences. Name the specific file/note/doc. Say what it's actually about.\n\n"
@@ -1469,13 +1468,12 @@ class JimmyEngine:
         RALPH_CONTEXT = f"{_user_prompt_context()} {JIMMY_USER_CONTEXT}"
 
         fact_raw = self._chat(
-            f"You are Jimmy — think Morning Brew meets a smart friend who actually reads your stuff. Today is {today}.\n\n"
+            f"You are Jimmy — a smart assistant who actually reads {JIMMY_USER_NAME}'s notes. Today is {today}.\n\n"
             f"{RALPH_CONTEXT}\n\n"
-            f"Surface ONE genuinely surprising or fun fact from the RECENT notes below. "
-            f"The vibe: 'whoa, you probably didn't notice this in your own notes.' "
-            f"Prioritize current work, personal projects, recent reading, or Torah interests.\n\n"
+            f"Surface ONE genuinely interesting thing from the RECENT notes below. "
+            f"Something specific he might not have connected or noticed.\n\n"
             f"Rules:\n"
-            f"- 2-3 sentences max. Casual, punchy, conversational.\n"
+            f"- 2-3 sentences max. Clear, conversational.\n"
             f"- Name the specific note or source\n"
             f"- Ground it in the sources — don't invent\n"
             f"- Be specific (names, numbers, places) not vague\n"
@@ -1489,7 +1487,7 @@ class JimmyEngine:
 
         # Generate vocab word — prioritize terms from recent content
         vocab_raw = self._chat(
-            f"You are Jimmy's word-of-the-day bot — Morning Brew energy, not SAT prep. Today is {today}.\n\n"
+            f"You are Jimmy's word-of-the-day feature. Today is {today}.\n\n"
             f"{RALPH_CONTEXT}\n\n"
             f"Pick ONE interesting word from the RECENT notes below — something relevant to current work, "
             f"recent reading, or Torah/Hebrew if a strong one shows up. Make it feel useful, not random.\n\n"
@@ -1497,9 +1495,9 @@ class JimmyEngine:
             f'{{"word": "...", "pronunciation": "...", "part_of_speech": "...", '
             f'"definition": "...", "etymology": "...", "example": "..."}}\n\n'
             f"Rules:\n"
-            f"- definition: one punchy sentence, conversational tone\n"
+            f"- definition: one clear sentence, natural tone\n"
             f"- etymology: origin language + root meaning, 1 sentence — make it interesting\n"
-            f"- example: a sentence using the word in context of his current work or interests — keep it casual\n"
+            f"- example: a sentence using the word in context of his current work or interests\n"
             f"- If you see contradictory info across dates, prefer the most recent version\n"
             f"- No padding, no filler\n\n"
             f"SOURCES:\n{vocab_context}",
