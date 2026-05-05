@@ -260,15 +260,33 @@ def _digest_source_score(meta: dict) -> float:
             pass
 
     if source in {"note", "apple_notes", "voice_memo", "granola"}:
-        return 2.0 if days_old <= 21 else 1.35
+        if days_old <= 7:
+            return 2.5
+        if days_old <= 21:
+            return 2.0
+        return 1.1
     if source in {"notion", "file", "gdrive", "web"}:
-        return 1.65 if days_old <= 21 else 1.2
+        if days_old <= 7:
+            return 2.2
+        if days_old <= 21:
+            return 1.65
+        return 1.0
     if source == "canvas":
-        # All canvas content is historical (graduated May 2025) — heavily downrank
-        return 0.25
+        # All canvas content is historical (graduated May 2025) — nearly exclude
+        return 0.1
     if source in {"readwise", "kindle", "goodreads", "podcast", "youtube"}:
-        return 0.9 if days_old <= 45 else 0.55
-    return 0.75
+        if days_old <= 7:
+            return 1.4
+        if days_old <= 30:
+            return 0.9
+        return 0.45
+    if source in {"claude_chat", "chatgpt_chat", "coding_session"}:
+        if days_old <= 7:
+            return 2.0
+        if days_old <= 21:
+            return 1.5
+        return 0.9
+    return 0.65
 
 
 def _digest_item_excluded(meta: dict) -> bool:
@@ -343,13 +361,14 @@ def _recency_weight(meta: dict) -> float:
     # Past calendar events are nearly worthless for search — they already happened
     if source == "calendar" and days > 1:
         return 0.40
-    if days < 0:    return 1.20   # future-dated (upcoming) — treat as fresh
+    if days < 0:    return 1.30   # future-dated (upcoming) — treat as very fresh
+    if days <= 7:   return 1.40   # last week — strongest boost
     if days < 30:   return 1.20
-    if days < 90:   return 1.10
-    if days < 180:  return 1.00
-    if days < 365:  return 0.90
-    if days < 730:  return 0.80
-    return 0.70
+    if days < 90:   return 1.05
+    if days < 180:  return 0.95
+    if days < 365:  return 0.85
+    if days < 730:  return 0.70
+    return 0.55
 
 
 def _rerank(
@@ -541,12 +560,14 @@ class JimmyEngine:
         self._openai_client = None
 
     def _hybrid_search(
-        self, query: str, n_candidates: int = 200, shuffle_factor: float = 0.0
+        self, query: str, n_candidates: int = 200, shuffle_factor: float = 0.0,
+        vector_only: bool = False
     ) -> list[tuple[float, str, dict, str]]:
         """Combine vector + BM25 via Reciprocal Rank Fusion, then apply source/recency weights.
 
         Returns (composite_score, doc, meta, id) sorted best-first.
 
+        vector_only: skip BM25 entirely (faster — avoids BM25 index build/load).
         shuffle_factor: 0.0 = pure score ranking; >0 injects random perturbation to surface
         buried content. E.g. 0.2 adds ±20% noise to each score.
         """
@@ -557,9 +578,12 @@ class JimmyEngine:
         vec_ids   = vec["ids"][0]
         vec_dists = vec["distances"][0]
 
-        # ── BM25 keyword search ──────────────────────────────────────────────
-        bm25_hits = self.store.bm25_search(query, n_results=n_candidates)
-        bm25_ids  = [h[0] for h in bm25_hits]
+        if not vector_only:
+            # ── BM25 keyword search ──────────────────────────────────────────────
+            bm25_hits = self.store.bm25_search(query, n_results=n_candidates)
+            bm25_ids  = [h[0] for h in bm25_hits]
+        else:
+            bm25_ids = []
 
         # ── Reciprocal Rank Fusion — vector weighted 2:1 over BM25 ──────────
         # Vector captures semantic intent; BM25 adds recall for exact terms.
@@ -576,16 +600,17 @@ class JimmyEngine:
             doc_id: (doc, meta)
             for doc_id, doc, meta in zip(vec_ids, vec["documents"][0], vec["metadatas"][0])
         }
-        bm25_only = [doc_id for doc_id in bm25_ids if doc_id not in lookup]
-        if bm25_only:
-            try:
-                extra = self.store.collection.get(
-                    ids=bm25_only, include=["documents", "metadatas"]
-                )
-                for doc_id, doc, meta in zip(extra["ids"], extra["documents"], extra["metadatas"]):
-                    lookup[doc_id] = (doc, meta)
-            except Exception:
-                pass
+        if not vector_only:
+            bm25_only = [doc_id for doc_id in bm25_ids if doc_id not in lookup]
+            if bm25_only:
+                try:
+                    extra = self.store.collection.get(
+                        ids=bm25_only, include=["documents", "metadatas"]
+                    )
+                    for doc_id, doc, meta in zip(extra["ids"], extra["documents"], extra["metadatas"]):
+                        lookup[doc_id] = (doc, meta)
+                except Exception:
+                    pass
 
         # ── Apply source/recency quality weights on top of RRF ───────────────
         scored: list[tuple[float, str, dict, str]] = []
@@ -1178,7 +1203,8 @@ class JimmyEngine:
             try:
                 cached = json.loads(cache_path.read_text())
                 cached_at = datetime.fromisoformat(cached.get("cached_at", "2000-01-01"))
-                if datetime.now() - cached_at < timedelta(minutes=60):
+                # Invalidate on new day OR after 60 minutes
+                if cached_at.date() == datetime.now().date() and datetime.now() - cached_at < timedelta(minutes=60):
                     return cached
             except Exception:
                 pass
@@ -1218,7 +1244,7 @@ class JimmyEngine:
                 return []
 
         best: dict[str, tuple] = {}
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=4) as pool:
             futures = {
                 pool.submit(_vec_search, q, 40): q
                 for q in seed_queries
@@ -1255,13 +1281,14 @@ class JimmyEngine:
             meta = item[2]
             title = (meta.get("title", "") or "").lower()
             hay = f"{title} {doc[:300]}"
+            source = meta.get("source", "")
+            # Canvas is always historical — hard suppress regardless of focus terms
+            if source == "canvas":
+                return 0.15
             if not active_focus_terms:
                 return 1.0
             if any(term in hay for term in active_focus_terms):
                 return 1.35
-            source = meta.get("source", "")
-            if source == "canvas":
-                return 0.3  # Historical course material — suppress
             return 0.9
 
         sorted_items = sorted(
@@ -1289,58 +1316,38 @@ class JimmyEngine:
         media_block = "\n".join(media_lines)
 
         raw = self._chat(
-            f"You are Jimmy writing {JIMMY_USER_NAME}'s {daypart} briefing. Today is {today}.\n"
+            f"You are Jimmy, {JIMMY_USER_NAME}'s personal intelligence assistant. Today is {today} ({daypart}).\n"
             f"{_user_prompt_context()}. {JIMMY_USER_NAME} graduated from Columbia in May 2025 and now works at Datadog as a software engineer. "
-            f"He learns best when things are explained slowly, clearly, and from first principles. "
-            f"Any course material (Operating Systems, Algorithms, Financial Accounting, Computer Networks, etc.) is HISTORICAL — from college, NOT current work. "
-            f"Do NOT reference old courses as if they are ongoing. His current focus is professional work, personal projects, and self-directed learning.\n\n"
-            f"Below are excerpts from his knowledge base.\n\n"
+            f"Any course material (OS, Algorithms, Financial Accounting, Computer Networks) is HISTORICAL — not current work. "
+            f"His current life is: Datadog engineering, personal projects, self-directed learning.\n\n"
             f"CURRENT CONTEXT:\n"
             f"- Today's focus: {today_focus or 'None'}\n"
             f"- Topics on deck: {today_topics or 'None'}\n\n"
-            f"NEWS CONTEXT:\n{news_text or 'No fresh news summary available.'}\n\n"
-            f"OPTIONAL MEDIA RECOMMENDATIONS:\n{media_block or '- none'}\n\n"
-            f"Write a daily briefing that feels current, grounded, and easy to absorb.\n\n"
-            f"## What Feels Most Current\n"
-            f"2-3 sentences on what he has actually been touching recently. Prefer recent notes, recent files, recent notion pages, recent drive docs, and recent current-semester course material. "
-            f"Do NOT surface old material just because it is intellectually rich.\n\n"
-            f"## What To Understand Today\n"
-            f"Pick 1-2 concepts that matter right now and explain them in plain language. "
-            f"Teach gently: remind him what the term means, why it matters, and what intuition to hold onto. "
-            f"If the source is a class file or reading, say that the material covers the concept; do not imply he already knows it.\n\n"
-            f"## One Useful Connection\n"
-            f"Make one concrete cross-domain connection only if it is easy to follow in 2 sentences. "
-            f"Skip this entirely if the connection would feel forced or too abstract.\n\n"
-            f"## Coming Up\n"
-            f"In 1-2 sentences, mention what you are working on or what is on deck professionally or personally. Do NOT reference old college courses.\n\n"
-            f"## News In Brief\n"
-            f"In 1-2 sentences, summarize only the most relevant news from the NEWS CONTEXT. Keep it digestible.\n\n"
-            f"## One Next Step\n"
-            f"End with exactly one concrete next step for today: one topic to review, one note to revisit, or one question to answer.\n\n"
-            f"## One Thing To Explore Later\n"
-            f"If the OPTIONAL MEDIA RECOMMENDATIONS are relevant, mention exactly one book, podcast, or video in one sentence and why it fits right now. If not relevant, omit this section entirely.\n\n"
-            f"ABSOLUTE RULES — NEVER VIOLATE:\n"
-            f"- NEVER mention calendar events, exam dates, assignment deadlines, or scheduled meetings by name\n"
-            f"- NEVER use bullet points\n"
-            f"- NEVER include raw URLs in the output\n"
-            f"- Keep each section to 2-3 sentences maximum\n"
-            f"- NO email subject lines or email content of any kind\n"
-            f"- NO emojis whatsoever — not a single character\n"
-            f"- NO phrases like 'Based on your knowledge base' or 'According to your notes'\n"
-            f"- Avoid high-abstraction jargon unless you immediately explain it simply\n"
-            f"- If something seems older than the recent period, leave it out unless it clearly connects to something current\n"
-            f"- Write in clean, warm prose paragraphs\n\n"
-            f"STRICT RULES:\n"
-            f"- Under 420 words total\n"
-            f"- Open with the most current thing, not the most intellectually impressive thing\n"
-            f"- NEVER start with 'Good morning', 'Good afternoon', 'Good evening', or any greeting/header line\n"
-            f"- Write in second person throughout\n"
-            f"- For passive course material, use language like 'Your OS material covers...' or 'There's a class file on...'\n"
-            f"- For personal notes, use language like 'You wrote...' or 'In your notes...'\n"
-            f"- NO inline citations like [1]\n"
-            f"- Grounded entirely in the sources below — do not invent\n\n"
+            f"NEWS CONTEXT:\n{news_text or 'None.'}\n\n"
+            f"MEDIA RECS:\n{media_block or 'None.'}\n\n"
+            f"Write a SHORT, punchy daily briefing (200 words MAX). Think smart friend who actually read his stuff, not generic AI summary.\n\n"
+            f"STRUCTURE (use these exact headers):\n\n"
+            f"## What You Were Just Working On\n"
+            f"1-2 sentences. Reference SPECIFIC files, notes, or docs by name from the sources below. "
+            f"Say what the document/note is actually about. Be concrete: 'Your note on X talks about Y' not 'You have been exploring various topics.'\n\n"
+            f"## One Thing Worth Knowing\n"
+            f"1-2 sentences. Pick ONE idea from recent sources and explain it simply. Make it feel like a useful insight, not a textbook definition.\n\n"
+            f"## What To Do Next\n"
+            f"1 sentence. One specific, actionable next step tied to something in his actual notes or work.\n\n"
+            f"RULES:\n"
+            f"- 200 words MAXIMUM. Shorter is better.\n"
+            f"- Reference specific document/note titles from the sources — do not be vague\n"
+            f"- NEVER reference old Columbia courses as current work\n"
+            f"- NO calendar events, exam dates, deadlines, meetings\n"
+            f"- NO bullet points, NO emojis, NO URLs, NO citations like [1]\n"
+            f"- NO greetings ('Good morning' etc)\n"
+            f"- NO meta-phrases ('Based on your knowledge base', 'According to your notes')\n"
+            f"- Write in second person, clean prose\n"
+            f"- Grounded ONLY in the sources below — do not invent\n"
+            f"- If news context exists, weave in ONE relevant headline naturally (do not create a separate news section)\n"
+            f"- If a media rec fits, mention it in one sentence at the end. Otherwise skip.\n\n"
             f"KNOWLEDGE SOURCES:\n{context}",
-            max_tokens=1500,
+            max_tokens=800,
         )
         # Post-processing: aggressive cleanup of the raw LLM output
         import re as _re
@@ -1374,33 +1381,33 @@ class JimmyEngine:
         if self.store.count() == 0:
             return {"fact": None, "vocab": None}
 
-        # Sample a diverse cross-section of the KB for fact generation
+        # Queries biased toward RECENT personal content, not generic KB exploration
         fact_queries = [
-            "surprising unexpected counterintuitive discovery",
-            "origin history etymology roots",
-            "statistics percentage proportion rate",
-            "invented discovered created founded",
-            "paradox contradiction irony strange",
-            "ancient medieval historical civilization",
-            "scientific finding experiment result",
-            "philosophical thought experiment argument",
+            "interesting insight from recent notes or documents",
+            "something I learned or wrote about recently",
+            "project work engineering system design personal notes",
+            "connection pattern between recent ideas",
+            "Datadog engineering observability monitoring",
+            "Torah Jewish wisdom parasha insight",
+            "book reading highlight recent",
+            "surprising detail from recent work or reading",
         ]
         # Run all fact and vocab queries in parallel
         all_queries = fact_queries + [
-            "term definition concept theory principle",
-            "named after called known as referred to",
-            "technical jargon discipline field domain",
-            "Greek Latin root derived from means",
-            "phenomenon effect law theorem conjecture",
+            "technical term concept from recent work",
+            "engineering vocabulary infrastructure distributed systems",
+            "word definition from recent notes or reading",
+            "Hebrew Torah term meaning",
+            "software architecture design pattern concept",
         ]
         vocab_queries_set = set(all_queries[len(fact_queries):])
 
         best_fact: dict = {}
         best_vocab: dict = {}
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=4) as pool:
             futures = {
-                pool.submit(self._hybrid_search, q, 40): q
+                pool.submit(self._hybrid_search, q, 40, vector_only=True): q
                 for q in all_queries
             }
             for future in as_completed(futures):
@@ -1414,11 +1421,20 @@ class JimmyEngine:
                 except Exception:
                     pass
 
-        fact_items = sorted(best_fact.values(), key=lambda x: x[0], reverse=True)[:20]
+        # Score by similarity * recency * source quality — prefer recent personal content
+        fact_items = sorted(
+            best_fact.values(),
+            key=lambda x: x[0] * _recency_weight(x[2]) * _digest_source_score(x[2]),
+            reverse=True,
+        )[:20]
         fact_docs = [x[1] for x in fact_items]
         fact_context = "\n\n".join(f"[{i+1}] {d[:400]}" for i, d in enumerate(fact_docs))
 
-        vocab_items = sorted(best_vocab.values(), key=lambda x: x[0], reverse=True)[:20]
+        vocab_items = sorted(
+            best_vocab.values(),
+            key=lambda x: x[0] * _recency_weight(x[2]) * _digest_source_score(x[2]),
+            reverse=True,
+        )[:20]
         vocab_docs = [x[1] for x in vocab_items]
         vocab_context = "\n\n".join(f"[{i+1}] {d[:400]}" for i, d in enumerate(vocab_docs))
 
@@ -1430,29 +1446,33 @@ class JimmyEngine:
         fact_raw = self._chat(
             f"You are a curious tutor. Today is {today}.\n\n"
             f"{RALPH_CONTEXT}\n\n"
-            f"Based on the excerpts below from his knowledge base, surface ONE genuinely interesting "
-            f"fact or insight that he probably hasn't consciously noticed or synthesized yet. "
-            f"Prioritize topics from his active courses (OS, Networks, Algorithms) or his Datadog prep "
-            f"(query engines: Arrow, Trino, ClickHouse, Calcite) or his Jewish/Torah interests.\n\n"
+            f"{JIMMY_USER_NAME} graduated Columbia May 2025 and now works at Datadog. "
+            f"Old courses (OS, Networks, Algorithms, etc.) are HISTORICAL, not current.\n\n"
+            f"Based on the excerpts below from his RECENT notes and content, surface ONE genuinely interesting "
+            f"fact or insight — something like 'here is something cool from your notes that you might not have noticed.' "
+            f"Prioritize his current work at Datadog, personal projects, recent reading, or Torah interests.\n\n"
             f"Rules:\n"
-            f"- 2–3 sentences max. No filler. No 'Did you know?'\n"
+            f"- 2-3 sentences max. No filler. No 'Did you know?'\n"
+            f"- Reference the specific note or source by name if possible\n"
             f"- Ground it in the sources — don't invent\n"
             f"- Make it specific (names, numbers, places) not vague\n"
             f"- Never reference calendar events, emails, or meeting titles\n"
+            f"- Do NOT reference old college courses as current work\n"
             f"- No bullet points, no citations like [1]\n"
             f"- Return ONLY the fact text, nothing else\n\n"
             f"SOURCES:\n{fact_context}",
             max_tokens=200,
         )
 
-        # Generate vocab word — prioritize CS/tech terms relevant to Datadog prep or current courses
+        # Generate vocab word — prioritize terms from recent content
         vocab_raw = self._chat(
             f"You are a vocabulary tutor. Today is {today}.\n\n"
             f"{RALPH_CONTEXT}\n\n"
-            f"Based on the excerpts below from his knowledge base, choose ONE interesting word "
-            f"that appears in or is directly relevant to what he is studying. "
-            f"Prioritize CS/tech terms relevant to his Datadog prep (query engines, distributed systems, "
-            f"columnar storage) or his current courses (OS, Networks, Algorithms). "
+            f"{JIMMY_USER_NAME} graduated Columbia May 2025 and now works at Datadog.\n\n"
+            f"Based on the excerpts below from his RECENT notes and content, choose ONE interesting word "
+            f"that appears in or is directly relevant to what he is currently working on. "
+            f"Prioritize terms from his Datadog work (observability, monitoring, infrastructure, distributed systems) "
+            f"or his recent reading and personal projects. "
             f"Also consider Torah/Hebrew terms if a strong one appears.\n\n"
             f"Return a JSON object with exactly these fields (no markdown, no extra text):\n"
             f'{{"word": "...", "pronunciation": "...", "part_of_speech": "...", '
@@ -1460,7 +1480,7 @@ class JimmyEngine:
             f"Rules:\n"
             f"- definition: one clear sentence\n"
             f"- etymology: origin language + root meaning, 1 sentence\n"
-            f"- example: a sentence using the word in context of his studies or Datadog prep\n"
+            f"- example: a sentence using the word in context of his current work or interests\n"
             f"- No padding\n\n"
             f"SOURCES:\n{vocab_context}",
             max_tokens=300,
@@ -1470,8 +1490,8 @@ class JimmyEngine:
         motivational_raw = self._chat(
             f"Write a single motivational sentence (1 sentence only, no more) for {JIMMY_USER_NAME}.\n"
             f"{RALPH_CONTEXT}\n"
-            f"Today is {today}. Make it specific to his situation — Datadog prep, Columbia finals, "
-            f"or his Jewish values. Keep it genuine, not cheesy. "
+            f"Today is {today}. Make it specific to his situation — his work at Datadog, "
+            f"personal growth, or his Jewish values. Keep it genuine, not cheesy. "
             f"Return ONLY the sentence, nothing else.",
             max_tokens=80,
             tier="fast",
@@ -2024,7 +2044,8 @@ KNOWLEDGE BASE:
             try:
                 cached = json.loads(cache_path.read_text())
                 cached_at = _datetime.fromisoformat(cached.get("cached_at", "2000-01-01"))
-                if _datetime.now() - cached_at < timedelta(hours=6):
+                # Invalidate on new day OR after 6 hours
+                if cached_at.date() == _datetime.now().date() and _datetime.now() - cached_at < timedelta(hours=6):
                     return cached
             except Exception:
                 pass
@@ -2260,7 +2281,7 @@ KNOWLEDGE BASE:
                 return (r_doc, r_meta, cand_doc, cand_meta, theme_obj.get("theme", ""), cand_domain)
             return None
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=4) as pool:
             theme_futures = {
                 pool.submit(_search_theme, t): t
                 for t in themes[:8]

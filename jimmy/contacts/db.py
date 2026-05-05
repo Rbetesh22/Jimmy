@@ -292,7 +292,7 @@ def contact_stats() -> dict:
 def recalc_closeness():
     """Recalculate closeness scores based on real signals, not bulk assignment."""
     conn = _conn()
-    contacts = conn.execute("SELECT id, first_name, last_name, email, phone, linkedin_url, company, role, source, notes, warmth_last_contact FROM contacts").fetchall()
+    contacts = conn.execute("SELECT id, first_name, last_name, email, phone, linkedin_url, company, role, source, notes, warmth_last_contact, starred FROM contacts").fetchall()
 
     # Count how many sources each person appears in (by name)
     from collections import Counter
@@ -315,33 +315,36 @@ def recalc_closeness():
             "SELECT a.name FROM affiliations a JOIN contact_affiliations ca ON ca.affiliation_id=a.id WHERE ca.contact_id=?", (cid,)
         ).fetchall()]
 
-        # Family → 5
+        # Family -> 5
         if 'family' in affs:
             score = 5
-        # Manual source (user typed them) → at least 3
+        # Manual source (user typed them) -> at least 3
         elif c['source'] == 'manual':
             score = 3
         else:
-            # Has phone → strong signal (you have their number)
+            # Has phone -> strong signal (you have their number)
             if c['phone']:
                 score += 2
-            # Has email → decent signal
+            # Has email -> decent signal
             if c['email']:
                 score += 1
-            # Has LinkedIn URL → some connection
+            # Has LinkedIn URL -> some connection
             if c['linkedin_url']:
                 score += 1
-            # Multiple sources → real relationship
+            # Multiple sources -> real relationship
             if name_sources.get(key, 1) >= 2:
                 score += 1
-            # Has company + role → real professional contact
+            # Has company + role -> real professional contact
             if c['company'] and c['role']:
                 score += 1
-            # Recent warmth → active relationship
+            # Recent warmth -> active relationship
             if c['warmth_last_contact'] and c['warmth_last_contact'] > (date.today() - timedelta(days=90)).isoformat():
                 score += 1
+            # Starred by user -> strong intent signal
+            if c['starred'] == 1:
+                score += 2
             # Cap at 5
-            score = min(score, 4)  # reserve 5 for family/manual stars
+            score = min(score, 5)
 
         conn.execute("UPDATE contacts SET closeness=? WHERE id=?", (score, cid))
 
@@ -382,6 +385,17 @@ def triage_remaining() -> int:
     count = conn.execute("SELECT COUNT(*) FROM contacts WHERE starred = 0").fetchone()[0]
     conn.close()
     return count
+
+
+def triage_stats() -> dict:
+    """Return triage progress: total, starred, dismissed, untriaged."""
+    conn = _conn()
+    total = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
+    starred = conn.execute("SELECT COUNT(*) FROM contacts WHERE starred = 1").fetchone()[0]
+    dismissed = conn.execute("SELECT COUNT(*) FROM contacts WHERE starred = -1").fetchone()[0]
+    untriaged = conn.execute("SELECT COUNT(*) FROM contacts WHERE starred = 0").fetchone()[0]
+    conn.close()
+    return {"total": total, "starred": starred, "dismissed": dismissed, "untriaged": untriaged, "triaged": starred + dismissed}
 
 
 def add_interaction(contact_id: int, type: str = "note", body: str = "", interaction_date: str = "") -> int:
@@ -511,6 +525,10 @@ def dashboard_data() -> dict:
     by_source = {r[0]: r[1] for r in conn.execute("SELECT source, COUNT(*) FROM contacts GROUP BY source").fetchall()}
     affiliations_count = conn.execute("SELECT COUNT(DISTINCT a.name) FROM affiliations a JOIN contact_affiliations ca ON ca.affiliation_id=a.id").fetchone()[0]
 
+    # Triage progress
+    triaged = conn.execute("SELECT COUNT(*) FROM contacts WHERE starred != 0").fetchone()[0]
+    dismissed = conn.execute("SELECT COUNT(*) FROM contacts WHERE starred = -1").fetchone()[0]
+
     conn.close()
     return {
         "total": total,
@@ -519,6 +537,9 @@ def dashboard_data() -> dict:
         "reach_out": reach_out,
         "warmth": {"hot": hot, "warm": warm, "cooling": cooling, "cold": cold, "never": never},
         "segments": segments,
+        "starred_count": starred_count,
+        "triaged": triaged,
+        "dismissed": dismissed,
     }
 
 

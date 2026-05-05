@@ -37,6 +37,36 @@ app.add_middleware(
 # Compress responses >= 1KB to reduce transfer size
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+
+
+class CacheHeaderMiddleware(BaseHTTPMiddleware):
+    """Add Cache-Control headers to cacheable GET endpoints so browsers cache responses."""
+    # path prefix -> max-age in seconds
+    CACHE_RULES = {
+        "/news": 1800,       # 30 min
+        "/digest": 3600,     # 60 min
+        "/today": 3600,      # 60 min
+        "/library": 3600,    # 60 min
+        "/status": 60,       # 1 min
+        "/upcoming": 300,    # 5 min
+        "/recent": 300,      # 5 min
+    }
+
+    async def dispatch(self, request: StarletteRequest, call_next):
+        response = await call_next(request)
+        if request.method == "GET" and "refresh=true" not in str(request.url):
+            for prefix, max_age in self.CACHE_RULES.items():
+                if request.url.path == prefix or request.url.path.startswith(prefix + "/"):
+                    response.headers["Cache-Control"] = f"private, max-age={max_age}, stale-while-revalidate={max_age * 2}"
+                    break
+        return response
+
+
+app.add_middleware(CacheHeaderMiddleware)
+
 UI_DIR = Path(__file__).parent.parent / "ui"
 
 
@@ -164,23 +194,30 @@ def _chunk_and_store(docs: list[Document], store: JimmyStore):
 
 
 # ── IN-MEMORY CACHE ────────────────────────────────────────────────────────────
-# Simple dict-based cache: key → {"data": ..., "ts": float}
+# Simple dict-based cache: key → {"data": ..., "ts": float, "date": str}
+# Invalidates on new calendar day so daily content stays fresh.
 import time as _time
+from datetime import date as _cache_date
 
 _CACHE: dict[str, dict] = {}
 _CACHE_TTL = 3600  # 1 hour in seconds
 
 
 def _cache_get(key: str):
-    """Return cached value if fresh, else None."""
+    """Return cached value if fresh AND same calendar day, else None."""
     entry = _CACHE.get(key)
-    if entry and (_time.time() - entry["ts"]) < _CACHE_TTL:
+    if not entry:
+        return None
+    # Invalidate if different calendar day
+    if entry.get("date") != _cache_date.today().isoformat():
+        return None
+    if (_time.time() - entry["ts"]) < _CACHE_TTL:
         return entry["data"]
     return None
 
 
 def _cache_set(key: str, data):
-    _CACHE[key] = {"data": data, "ts": _time.time()}
+    _CACHE[key] = {"data": data, "ts": _time.time(), "date": _cache_date.today().isoformat()}
 
 
 # ── STATUS ─────────────────────────────────────────────────────────────────────
@@ -886,7 +923,8 @@ def digest(refresh: bool = False):
         try:
             cached = json.loads(cache_path.read_text())
             cached_at = datetime.fromisoformat(cached.get("cached_at", "2000-01-01"))
-            if datetime.now() - cached_at < timedelta(minutes=60):
+            # Invalidate on new calendar day OR after 60 min
+            if cached_at.date() == datetime.now().date() and datetime.now() - cached_at < timedelta(minutes=60):
                 return cached
         except Exception:
             pass
@@ -924,16 +962,17 @@ def today_combined(refresh: bool = False):
         try:
             cached = json.loads(cache_path.read_text())
             cached_at = datetime.fromisoformat(cached.get("cached_at", "2000-01-01"))
-            if datetime.now() - cached_at < timedelta(minutes=60):
+            # Invalidate on new calendar day OR after 60 min
+            if cached_at.date() == datetime.now().date() and datetime.now() - cached_at < timedelta(minutes=60):
                 return cached
         except Exception:
             pass
 
     result: dict = {}
 
-    # Countdowns
+    # Countdowns — graduated May 2025, now at Datadog
     datadog_start = DATADOG_START_DATE
-    graduation = _date(2026, 5, 15)
+    graduation = _date(2025, 5, 15)  # Already graduated
     today = _date.today()
     result["countdowns"] = {
         "datadog_days": (datadog_start - today).days,
@@ -1532,6 +1571,8 @@ def _fetch_twitter_live() -> list[dict]:
                             "image": img,
                             "category": category,
                             "source": f"@{tw.user.username}",
+                            "published": tw.date.isoformat() if hasattr(tw, "date") and tw.date else "",
+                            "published_display": tw.date.strftime("%b %d, %I:%M %p") if hasattr(tw, "date") and tw.date else "",
                         })
                 except Exception:
                     continue
@@ -1569,7 +1610,8 @@ def news(refresh: bool = False):
         try:
             cached = json.loads(cache_path.read_text())
             cached_at = datetime.fromisoformat(cached.get("cached_at", "2000-01-01"))
-            if datetime.now() - cached_at < timedelta(minutes=30):
+            # Invalidate on new calendar day OR after 30 min
+            if cached_at.date() == datetime.now().date() and datetime.now() - cached_at < timedelta(minutes=30):
                 return cached
         except Exception:
             pass
@@ -1669,6 +1711,34 @@ def news(refresh: bool = False):
                                 else:
                                     break
 
+                # Parse published date from RSS pubDate / Atom published/updated
+                pub_date = ""
+                for date_tag in ["pubDate", "published", "updated",
+                                 "atom:published", "atom:updated"]:
+                    date_el = item.find(date_tag) or item.find(date_tag, ns)
+                    if date_el is not None and date_el.text:
+                        pub_date = date_el.text.strip()
+                        break
+                # Try dc:date (Dublin Core) as fallback
+                if not pub_date:
+                    dc_el = item.find("{http://purl.org/dc/elements/1.1/}date")
+                    if dc_el is not None and dc_el.text:
+                        pub_date = dc_el.text.strip()
+                # Normalize to a human-readable format if possible
+                pub_date_display = ""
+                if pub_date:
+                    from email.utils import parsedate_to_datetime as _parsedate
+                    try:
+                        dt = _parsedate(pub_date)
+                        pub_date_display = dt.strftime("%b %d, %I:%M %p")
+                    except Exception:
+                        # Fallback: try ISO format
+                        try:
+                            dt = datetime.fromisoformat(pub_date.replace("Z", "+00:00"))
+                            pub_date_display = dt.strftime("%b %d, %I:%M %p")
+                        except Exception:
+                            pub_date_display = pub_date[:25]  # raw fallback
+
                 if title and link:
                     items.append({
                         "title": title.strip(),
@@ -1677,6 +1747,8 @@ def news(refresh: bool = False):
                         "image": image,
                         "category": feed_info["category"],
                         "source": feed_info["label"],
+                        "published": pub_date,
+                        "published_display": pub_date_display,
                     })
         except Exception:
             pass
@@ -1767,7 +1839,7 @@ def news(refresh: bool = False):
             deduped.append(a)
     articles = deduped
 
-    # Fetch og:image for articles missing images (parallel, with timeout)
+    # og:image fetching moved to background — return articles immediately, backfill images later
     def _fetch_og_image(article: dict) -> None:
         if article.get("image"):
             return
@@ -1775,7 +1847,6 @@ def news(refresh: bool = False):
             with httpx.Client(timeout=4, follow_redirects=True) as c:
                 resp = c.get(article["url"], headers={"User-Agent": UA})
                 if resp.status_code == 200:
-                    # Try og:image meta tag
                     m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', resp.text[:15000])
                     if not m:
                         m = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', resp.text[:15000])
@@ -1784,13 +1855,31 @@ def news(refresh: bool = False):
         except Exception:
             pass
 
-    no_image = [a for a in articles if not a.get("image")]
-    if no_image:
+    def _backfill_og_images(arts: list[dict], cp: Path) -> None:
+        """Background: fetch og:image for articles missing images, then update disk cache."""
+        no_img = [a for a in arts if not a.get("image")]
+        if not no_img:
+            return
         with ThreadPoolExecutor(max_workers=10) as pool:
-            list(pool.map(_fetch_og_image, no_image[:30]))  # Cap at 30 to avoid slow response
+            list(pool.map(_fetch_og_image, no_img[:30]))
+        try:
+            if cp.exists():
+                cached = json.loads(cp.read_text())
+                cached["articles"] = arts
+                by_cat: dict[str, list] = {}
+                cc: dict[str, int] = {}
+                for a in arts:
+                    cat = a["category"]
+                    if cc.get(cat, 0) < 10:
+                        by_cat.setdefault(cat, []).append(a)
+                        cc[cat] = cc.get(cat, 0) + 1
+                cached["by_category"] = by_cat
+                cp.write_text(json.dumps(cached))
+        except Exception:
+            pass
 
-    # Prefer articles with images, but keep all
-    articles.sort(key=lambda a: (0 if a.get("image") else 1))
+    # Fire-and-forget background thread for og:image backfill
+    threading.Thread(target=_backfill_og_images, args=(articles, cache_path), daemon=True).start()
 
     # Group by category (cap 10 per category)
     by_category: dict[str, list] = {}
@@ -2189,6 +2278,11 @@ def triage_contacts(offset: int = 0, limit: int = 20):
 def recalc_closeness():
     contacts_db.recalc_closeness()
     return {"ok": True}
+
+
+@app.get("/contacts/triage/stats")
+def triage_stats():
+    return contacts_db.triage_stats()
 
 
 @app.get("/contacts/{contact_id}")
