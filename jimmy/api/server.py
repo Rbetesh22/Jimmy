@@ -102,7 +102,9 @@ _purge_stale_caches()
 
 @app.get("/app", response_class=HTMLResponse)
 def ui():
-    return (UI_DIR / "index.html").read_text()
+    from starlette.responses import HTMLResponse as _HR
+    content = (UI_DIR / "index.html").read_text()
+    return _HR(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 @app.get("/manifest.json")
 def manifest():
@@ -1699,6 +1701,8 @@ def news(refresh: bool = False):
         {"url": "https://www.espn.com/espn/rss/nhl/news", "category": "Sports", "label": "ESPN NHL"},
         {"url": "https://www.nba.com/news/rss.xml", "category": "Sports", "label": "NBA.com"},
         {"url": "https://www.nhl.com/rss/news.xml", "category": "Sports", "label": "NHL.com"},
+        {"url": "https://www.espn.com/espn/rss/soccer/news", "category": "Sports", "label": "ESPN Soccer"},
+        {"url": "https://feeds.bbci.co.uk/sport/football/rss.xml", "category": "Sports", "label": "BBC Football"},
         {"url": "https://feeds.bbci.co.uk/sport/rss.xml", "category": "Sports", "label": "BBC Sport"},
         {"url": "https://theathletic.com/feed/", "category": "Sports", "label": "The Athletic"},
     ]
@@ -1965,16 +1969,24 @@ def news(refresh: bool = False):
         "The Guardian": 4, "NBC News": 4, "Axios": 3, "NPR": 3,
         "Al Jazeera": 9,  # deprioritized
     }
-    articles.sort(key=lambda a: SOURCE_PRIORITY.get(a["source"], 5))
+    # Sort: image first, then source priority
+    articles.sort(key=lambda a: (0 if a.get("image") else 1, SOURCE_PRIORITY.get(a["source"], 5)))
 
-    # Group by category (cap 10 per category)
+    # Group by category — cap per source within category to prevent one source dominating
     by_category: dict[str, list] = {}
     cat_counts: dict[str, int] = {}
+    cat_source_counts: dict[str, dict[str, int]] = {}
+    MAX_PER_SOURCE_PER_CAT = 3  # e.g. max 3 ESPN NHL articles in Sports
     for a in articles:
         c = a["category"]
-        if cat_counts.get(c, 0) < 10:
+        src = a["source"]
+        src_counts = cat_source_counts.setdefault(c, {})
+        if src_counts.get(src, 0) >= MAX_PER_SOURCE_PER_CAT:
+            continue
+        if cat_counts.get(c, 0) < 12:
             by_category.setdefault(c, []).append(a)
             cat_counts[c] = cat_counts.get(c, 0) + 1
+            src_counts[src] = src_counts.get(src, 0) + 1
 
     result = {
         "articles": articles,
@@ -2072,6 +2084,40 @@ def news_summary(refresh: bool = False):
             pass
         return result
     except Exception as e:
+        return {"summary": ""}
+
+
+@app.get("/news/category-summary")
+def news_category_summary(category: str):
+    """Generate a short AI summary for a specific news category."""
+    import json
+    from datetime import datetime
+
+    news_cache_path = JIMMY_DATA_DIR / "news_cache.json"
+    if not news_cache_path.exists():
+        return {"summary": ""}
+    try:
+        news_data = json.loads(news_cache_path.read_text())
+    except Exception:
+        return {"summary": ""}
+
+    by_cat = news_data.get("by_category", {})
+    arts = by_cat.get(category, [])
+    if not arts:
+        return {"summary": ""}
+
+    headlines = "\n".join(f"- {a['title']} ({a['source']})" for a in arts[:10])
+    engine = get_engine()
+    try:
+        text = engine._chat(
+            f"Write a 2-3 sentence summary of today's {category} news for {JIMMY_USER_NAME}. "
+            f"Be specific — names, numbers, outcomes. No filler. Conversational tone.\n\n"
+            f"Headlines:\n{headlines}",
+            max_tokens=200,
+            tier="fast",
+        )
+        return {"summary": text, "category": category}
+    except Exception:
         return {"summary": ""}
 
 

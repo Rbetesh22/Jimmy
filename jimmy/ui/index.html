@@ -2718,6 +2718,28 @@ function newsToggleCat(cat) {
   _renderNewsGrid();
 }
 
+const _catSummaryCache = {};
+async function _fetchCatSummary(cat, arts) {
+  const elId = `cat-summary-${cat.replace(/\s/g,'')}`;
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (_catSummaryCache[cat]) {
+    el.querySelector('.prose').innerHTML = marked.parse(_catSummaryCache[cat]);
+    return;
+  }
+  try {
+    const resp = await fetch(`/news/category-summary?category=${encodeURIComponent(cat)}`);
+    const d = await resp.json();
+    if (d.summary) {
+      _catSummaryCache[cat] = d.summary;
+      const proseEl = el.querySelector('.prose');
+      if (proseEl) proseEl.innerHTML = marked.parse(d.summary);
+    } else {
+      el.style.display = 'none';
+    }
+  } catch { el.style.display = 'none'; }
+}
+
 function _renderNewsGrid() {
   const grid = document.getElementById('news-grid');
   if (!grid) return;
@@ -2771,17 +2793,32 @@ function _renderNewsGrid() {
   } else {
     // ── SINGLE CATEGORY VIEW ──
     const arts = bycat[newsActiveCat] || [];
+    // Category summary card
+    const catColor = NEWS_CAT_COLORS[newsActiveCat] || '#6c8aff';
+    html += `<div id="cat-summary-${newsActiveCat.replace(/\s/g,'')}" class="news-fade-in" style="margin-bottom:16px;padding:14px 16px;border-radius:12px;background:var(--surface-2);border-left:3px solid ${catColor};">
+      <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:${catColor};margin-bottom:6px;">${esc(newsActiveCat)} Summary</div>
+      <div class="prose" style="font-size:12.5px;color:var(--text-2);line-height:1.6;"><div class="skeleton skeleton-text long"></div><div class="skeleton skeleton-text medium"></div></div>
+    </div>`;
+    // Fetch category summary async
+    _fetchCatSummary(newsActiveCat, arts);
     if (arts.length) {
-      html += `<div style="margin-bottom:16px;" class="news-fade-in">${_newsHeroCard(arts[0])}</div>`;
-      if (arts.length > 1) {
-        const gridArts = arts.slice(1, 5);
+      // Prefer article with image for hero
+      const heroArt = arts.find(a => a.image) || arts[0];
+      const rest = arts.filter(a => a !== heroArt);
+      html += `<div style="margin-bottom:16px;" class="news-fade-in">${_newsHeroCard(heroArt)}</div>`;
+      const withImg = rest.filter(a => a.image);
+      const noImg = rest.filter(a => !a.image);
+      const gridArts = [...withImg, ...noImg].slice(0, 4);
+      if (gridArts.length) {
         html += `<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:20px;" class="news-fade-in news-fade-delay-1">
           ${gridArts.map(a => `<div>${_newsFeaturedCard(a)}</div>`).join('')}
         </div>`;
       }
-      if (arts.length > 5) {
+      const usedInGrid = new Set([heroArt, ...gridArts]);
+      const remaining = arts.filter(a => !usedInGrid.has(a));
+      if (remaining.length) {
         html += `<div style="border-top:1px solid var(--border);padding-top:10px;" class="news-fade-in news-fade-delay-2">`;
-        html += arts.slice(5).map(a => _newsCompactItem(a)).join('');
+        html += remaining.map(a => _newsCompactItem(a)).join('');
         html += `</div>`;
       }
     }
@@ -2811,7 +2848,8 @@ async function renderNews() {
       @keyframes newsFadeIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
       .news-summary-card { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); border: none; border-radius: 14px; padding: 18px 20px; box-shadow: 0 4px 24px rgba(0,0,0,0.15); }
       .news-summary-card .sum-label { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: rgba(255,255,255,0.45); margin-bottom: 8px; }
-      .news-summary-card .prose { font-size: 13px; color: rgba(255,255,255,0.88); line-height: 1.65; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+      .news-summary-card .prose { font-size: 13px; color: rgba(255,255,255,0.88); line-height: 1.65; }
+      .news-summary-card .prose.collapsed { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
       .news-summary-card .prose p { margin-bottom: 3px; }
       .news-summary-card .prose strong { color: #fff; }
       .news-summary-card .prose a { color: #6c8aff; }
@@ -2861,7 +2899,8 @@ async function renderNews() {
     const briefEl = document.getElementById('news-brief');
     if (briefEl) {
       if (sumData.summary) {
-        briefEl.innerHTML = `<div class="sum-label">AI Summary</div><div class="prose">${marked.parse(sumData.summary)}</div>`;
+        briefEl.innerHTML = `<div class="sum-label">AI Summary</div><div class="prose collapsed" id="news-prose">${marked.parse(sumData.summary)}</div>
+          <button onclick="const p=document.getElementById('news-prose');p.classList.toggle('collapsed');this.textContent=p.classList.contains('collapsed')?'Read more \u2193':'Show less \u2191'" style="margin-top:8px;font-size:11px;color:rgba(255,255,255,0.5);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Read more \u2193</button>`;
       } else {
         briefEl.innerHTML = `<div class="sum-label">AI Summary</div><div class="prose">Top stories from around the world.</div>`;
       }
