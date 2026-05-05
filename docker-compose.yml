@@ -11,3 +11,23 @@ services:
     env_file:
       - .env.local
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  # Optional: expose via Cloudflare tunnel (uncomment to use)
+  # Run: docker compose --profile tunnel up
+  cloudflare-tunnel:
+    image: cloudflare/cloudflared:latest
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      jimmy:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles:
+      - tunnel

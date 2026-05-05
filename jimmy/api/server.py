@@ -74,13 +74,13 @@ UI_DIR = Path(__file__).parent.parent / "ui"
 
 
 def _purge_stale_caches() -> None:
-    """Delete stale AI cache files on startup. recs_cache > 24h, study_plan_cache > 2h."""
+    """Delete stale AI cache files on startup. recs_cache > 24h."""
     import json as _json
     from datetime import datetime as _dt, timedelta as _td
 
     STALE_RULES = {
         "recs_cache.json": _td(hours=24),
-        "study_plan_cache.json": _td(hours=2),
+        # TODO: add study_plan_cache.json here once /study-plan endpoint is implemented
     }
     jimmy_dir = JIMMY_DATA_DIR
     for fname, max_age in STALE_RULES.items():
@@ -110,6 +110,17 @@ def ui():
 def manifest():
     from fastapi.responses import FileResponse
     return FileResponse(UI_DIR / "manifest.json", media_type="application/manifest+json")
+
+@app.get("/favicon.svg")
+@app.get("/favicon.ico")
+def favicon():
+    from fastapi.responses import FileResponse
+    return FileResponse(UI_DIR / "favicon.svg", media_type="image/svg+xml")
+
+@app.get("/logo.svg")
+def logo():
+    from fastapi.responses import FileResponse
+    return FileResponse(UI_DIR / "logo.svg", media_type="image/svg+xml")
 
 
 
@@ -250,14 +261,27 @@ def status():
         return cached
     store = get_store()
     total = store.count()
-    # Fetch only metadatas (no documents/embeddings) — fast even for 130k+ docs
+    # Fetch only source field from metadatas — paginate to avoid loading 152K rows at once
     breakdown: dict[str, int] = {}
     try:
-        result = store.collection.get(include=["metadatas"])
-        for meta in result["metadatas"]:
-            src = meta.get("source", "")
-            if src:
-                breakdown[src] = breakdown.get(src, 0) + 1
+        batch_size = 10000
+        offset = 0
+        while True:
+            result = store.collection.get(
+                include=["metadatas"],
+                limit=batch_size,
+                offset=offset,
+            )
+            metas = result.get("metadatas") or []
+            if not metas:
+                break
+            for meta in metas:
+                src = meta.get("source", "")
+                if src:
+                    breakdown[src] = breakdown.get(src, 0) + 1
+            if len(metas) < batch_size:
+                break
+            offset += batch_size
     except Exception:
         pass
     result_data = {"total_chunks": total, "sources": breakdown}
@@ -591,7 +615,7 @@ def ask_stream(req: QueryRequest):
             today = _now.strftime("%A, %B ") + str(_now.day) + _now.strftime(", %Y")
 
             queries = engine._expand_query(req.q)
-            scored = engine._multi_search(queries, n_candidates=200)
+            scored = engine._multi_search(queries, n_candidates=100)
 
             seen_title_keys: set[str] = set()
             deduped = []
@@ -773,17 +797,26 @@ def resurface_random():
         seen_titles: set = set()  # deduplicate by title
         candidates = []
 
-        for seed in SEARCH_SEEDS:
+        # Run all seed searches in parallel instead of sequentially
+        from concurrent.futures import ThreadPoolExecutor as _TP, as_completed as _ac
+        def _search_seed(seed):
             try:
-                res = store.search(seed, n_results=20)
+                return store.search(seed, n_results=20)
+            except Exception:
+                return None
+
+        with _TP(max_workers=4) as pool:
+            futures = {pool.submit(_search_seed, seed): seed for seed in SEARCH_SEEDS}
+            for future in _ac(futures):
+                res = future.result()
+                if not res:
+                    continue
                 for doc, meta, doc_id in zip(res["documents"][0], res["metadatas"][0], res["ids"][0]):
                     if doc_id in seen_ids:
                         continue
                     src = meta.get("source", "")
                     if _is_low_quality_candidate(doc, meta):
                         continue
-                    # Deduplicate by title (e.g. multiple chunks from same meeting)
-                    # Strip dates/times from title for dedup (same recurring meeting = same title)
                     title_raw = (meta.get("title", "") or "").lower().strip()
                     title_key = _re.sub(r'\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}\s*(am|pm)?|\(\d{4}.*?\)', '', title_raw).strip()[:50]
                     if title_key and title_key in seen_titles:
@@ -793,8 +826,6 @@ def resurface_random():
                     seen_ids.add(doc_id)
                     priority = 0 if src in PRIORITY_SOURCES else 1
                     candidates.append((priority, doc, meta, doc_id))
-            except Exception:
-                continue
 
         if not candidates:
             raise HTTPException(status_code=404, detail="No content found in knowledge base.")
@@ -1449,9 +1480,18 @@ def suggestions():
         ]
         seen_titles: set[str] = set()
         sample: list = []
-        for seed in SEARCH_SEEDS:
+        from concurrent.futures import ThreadPoolExecutor as _TP2, as_completed as _ac2
+        def _sug_search(seed):
             try:
-                res = store.search(seed, n_results=5)
+                return store.search(seed, n_results=5)
+            except Exception:
+                return None
+        with _TP2(max_workers=4) as pool:
+            futures = {pool.submit(_sug_search, seed): seed for seed in SEARCH_SEEDS}
+            for future in _ac2(futures):
+                res = future.result()
+                if not res:
+                    continue
                 for doc, meta in zip(res["documents"][0], res["metadatas"][0]):
                     src = meta.get("source", "")
                     if src in EXCLUDE:
@@ -1461,8 +1501,6 @@ def suggestions():
                         continue
                     seen_titles.add(t)
                     sample.append((doc, meta))
-            except Exception:
-                continue
 
         if not sample:
             return {"suggestions": []}

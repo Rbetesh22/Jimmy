@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" fill="none">
+  <!-- Jimmy favicon: stylized J with neuron nodes, optimized for small sizes -->
+  <rect width="192" height="192" rx="40" fill="#0d0f14"/>
+  <!-- Main J stroke -->
+  <path d="M112 40 L112 128 Q112 160 80 160 Q48 160 48 128" stroke="#6c8aff" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- Neural connection lines -->
+  <line x1="112" y1="56" x2="144" y2="40" stroke="#6c8aff" stroke-width="6" stroke-linecap="round" opacity="0.5"/>
+  <line x1="112" y1="80" x2="152" y2="72" stroke="#6c8aff" stroke-width="6" stroke-linecap="round" opacity="0.4"/>
+  <line x1="112" y1="56" x2="80" y2="36" stroke="#6c8aff" stroke-width="6" stroke-linecap="round" opacity="0.4"/>
+  <!-- Neuron nodes -->
+  <circle cx="112" cy="40" r="12" fill="#6c8aff"/>
+  <circle cx="112" cy="80" r="10" fill="#6c8aff" opacity="0.7"/>
+  <circle cx="80" cy="160" r="10" fill="#6c8aff" opacity="0.8"/>
+  <circle cx="48" cy="128" r="8" fill="#6c8aff" opacity="0.6"/>
+  <!-- Satellite nodes -->
+  <circle cx="144" cy="40" r="6" fill="#6c8aff" opacity="0.45"/>
+  <circle cx="152" cy="72" r="6" fill="#6c8aff" opacity="0.4"/>
+  <circle cx="80" cy="36" r="6" fill="#6c8aff" opacity="0.4"/>
+</svg>

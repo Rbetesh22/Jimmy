@@ -1,0 +1,1 @@
+This is a test note dropped into the Neuron inbox folder. It contains thoughts about distributed systems, query engines, and Apache Arrow columnar format for fast analytics. The key insight is that columnar storage enables vectorized execution which is critical for OLAP workloads.

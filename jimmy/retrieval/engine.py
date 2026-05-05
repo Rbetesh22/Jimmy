@@ -85,14 +85,13 @@ SOURCE_ICONS = {
 
 # Higher weight = prefer this source over others at equal semantic similarity.
 # Personal written notes rank highest; passive consumption lowest.
-# Canvas is authoritative for course content but sits below personal notes.
 SOURCE_WEIGHTS: dict[str, float] = {
     "voice_memo":    1.50,   # personal spoken notes — highest signal (you said it out loud)
     "granola":       1.50,   # personal meeting notes — highest signal
     "apple_notes":   1.45,   # personal notes — very high signal
     "note":          1.45,
     "notion":        1.40,   # curated personal workspace
-    "canvas":        1.35,   # authoritative course material
+    "canvas":        0.60,   # ALL courses completed — historical reference only
     "file":          1.20,   # manually ingested file — deliberate capture
     "gdrive":        1.20,   # docs you've written
     "kindle":        1.20,   # deliberate reading (highlighted)
@@ -204,8 +203,7 @@ def _calendar_priority(title: str, calendar: str = "") -> int:
         "presentation", "application", "hw", "homework", "assignment",
     )
     academic = (
-        "operating systems", "computer networks", "financial accounting",
-        "analysis of algorithms", "algorithms", "office hours", "section",
+        "office hours", "section",
         "lecture", "class", "study", "review session",
     )
     personal = (
@@ -441,12 +439,6 @@ def _knowledge_level(meta: dict) -> str:
     today = _date.today().isoformat()
     source = meta.get("source", "")
 
-    # Future Canvas items = not yet in class
-    for future_key in ("due_at", "unlock_at", "unlock_date", "available_from"):
-        val = meta.get(future_key, "")
-        if val and isinstance(val, str) and len(val) >= 10 and val[:10] > today:
-            return "NOT YET COVERED IN COURSE"
-
     # User actively created / built
     if source in ("github",):
         return "BUILT THIS — deep familiarity"
@@ -464,13 +456,9 @@ def _knowledge_level(meta: dict) -> str:
             return "SAVED — may not have read/watched in depth"
         return "SAVED / PARTIALLY ENGAGED"
 
-    # Canvas: course material — varies widely in engagement
+    # Canvas: ALL courses are completed (graduated May 2025, MS done Spring 2026)
     if source == "canvas":
-        date_str = _extract_date(meta)
-        six_months_ago = (_date.today() - timedelta(days=180)).isoformat()
-        if date_str and date_str >= six_months_ago:
-            return "COURSE MATERIAL — currently in curriculum"
-        return "COURSE MATERIAL — from a past course"
+        return "COURSE MATERIAL — from a completed course"
 
     # Everything else: classify by recency
     date_str = _extract_date(meta)
@@ -580,6 +568,7 @@ class JimmyEngine:
         self._upcoming_cache: dict = {}  # cache_key → (result, timestamp)
         self._anthropic_client = None
         self._openai_client = None
+        self._ollama_client = None
 
     def _hybrid_search(
         self, query: str, n_candidates: int = 200, shuffle_factor: float = 0.0,
@@ -737,12 +726,13 @@ class JimmyEngine:
     def _ollama_chat(self, prompt: str, model: str, max_tokens: int) -> str:
         from openai import OpenAI
         from ..config import OLLAMA_BASE_URL
-        client = OpenAI(
-            base_url=OLLAMA_BASE_URL,
-            api_key="ollama",
-            http_client=httpx.Client(trust_env=False, timeout=httpx.Timeout(120.0, connect=10.0)),
-        )
-        response = client.chat.completions.create(
+        if self._ollama_client is None:
+            self._ollama_client = OpenAI(
+                base_url=OLLAMA_BASE_URL,
+                api_key="ollama",
+                http_client=httpx.Client(trust_env=False, timeout=httpx.Timeout(120.0, connect=10.0)),
+            )
+        response = self._ollama_client.chat.completions.create(
             model=model,
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
@@ -870,12 +860,22 @@ class JimmyEngine:
         return [question]
 
     def _multi_search(self, queries: list[str], n_candidates: int = 200) -> list[tuple]:
-        """Run hybrid search for each query, merge by best score per doc, return sorted list."""
+        """Run hybrid search for each query in parallel, merge by best score per doc, return sorted list."""
+        if len(queries) <= 1:
+            # Single query — no parallelism needed
+            results = self._hybrid_search(queries[0], n_candidates=n_candidates) if queries else []
+            return results
+
         best: dict[str, tuple] = {}
-        for q in queries:
-            for score, doc, meta, doc_id in self._hybrid_search(q, n_candidates=n_candidates):
-                if doc_id not in best or score > best[doc_id][0]:
-                    best[doc_id] = (score, doc, meta, doc_id)
+        with ThreadPoolExecutor(max_workers=min(4, len(queries))) as pool:
+            futures = {pool.submit(self._hybrid_search, q, n_candidates): q for q in queries}
+            for future in as_completed(futures):
+                try:
+                    for score, doc, meta, doc_id in future.result():
+                        if doc_id not in best or score > best[doc_id][0]:
+                            best[doc_id] = (score, doc, meta, doc_id)
+                except Exception:
+                    pass
         return sorted(best.values(), key=lambda x: x[0], reverse=True)
 
     def get_upcoming_exams(self, days: int = 14) -> list[dict]:
@@ -1101,7 +1101,8 @@ class JimmyEngine:
             f"- If sources are thin, say so and lean on web search results to teach.\n"
             f"- Write in second person ('you', 'your') — conversational, direct, like a smart TA.\n"
             f"- NEVER infer habits or routines from individual data points.\n"
-            f"- For OS/Networks/Algorithms/Accounting questions: be precise and technical — this is exam prep.\n\n"
+            f"- ALL Columbia courses are COMPLETED — never reference exams, assignments, or deadlines as current.\n"
+            f"- For technical questions (OS, Networks, Algorithms, etc.): be precise and technical.\n\n"
             f"SOURCES:\n{context}{web_section}\n\n"
             f"QUESTION: {question}",
             max_tokens=1024,
@@ -1366,8 +1367,9 @@ class JimmyEngine:
             f"1 sentence. One specific, actionable thing tied to actual notes or work.\n\n"
             f"HARD RULES:\n"
             f"- 150-200 words. Shorter is better.\n"
-            f"- {JIMMY_USER_NAME} GRADUATED from Columbia undergrad in May 2025. Most Columbia courses are DONE (Fundies, Data Structures, etc). The only ones that might still be relevant are for his masters - Summer 2026 (Machine Learning and Statistics), and Fall 2026 (High Performace Machine Learning) ones, or Spring 2026 (OS, Networks, Algorithms, Accounting) — but even those are mostly historical since he's almost done with finals."
-            f"NEVER reference an old course, midterm, assignment, or exam as current or upcoming. They are historical.\n"
+            f"- {JIMMY_USER_NAME} GRADUATED from Columbia (BS May 2025, MS coursework through Spring 2026). "
+            f"ALL Columbia courses are COMPLETED — OS, Networks, Algorithms, Accounting, ML, Stats, etc. "
+            f"NEVER reference any course, midterm, assignment, or exam as current or upcoming. They are ALL historical.\n"
             f"- If you see contradictory information across different dates, ALWAYS prefer the most recent version. "
             f"Old plans, decisions, or preferences may have been superseded. A note from 2024 about 'registering for a course' is STALE — ignore it.\n"
             f"- For Torah/parasha: do NOT guess the parasha. If the sources mention a specific parasha, check if it makes sense for {today}. "
@@ -1489,7 +1491,7 @@ class JimmyEngine:
             f"- Ground it in the sources — don't invent\n"
             f"- Be specific (names, numbers, places) not vague\n"
             f"- No 'Did you know?', no corporate speak, no filler\n"
-            f"- Old Columbia courses are DONE — never reference them as current\n"
+            f"- ALL Columbia courses are COMPLETED (BS May 2025, MS Spring 2026) — never reference them as current\n"
             f"- If you see contradictory info across dates, prefer the most recent version\n"
             f"- Return ONLY the fact text, nothing else\n\n"
             f"SOURCES:\n{fact_context}",
@@ -1861,27 +1863,28 @@ KNOWLEDGE BASE:
         today = _date.today().isoformat()
 
         # --- Prioritize course material sources for academic topics ---
-        # Run multiple targeted searches to get diverse, relevant content
+        # All courses are completed but material is still useful for practice/review
         ACADEMIC_TOPICS = {
             "operating systems", "os", "computer networks", "networks", "networking",
             "algorithms", "algorithm", "data structures", "financial accounting",
             "accounting", "distributed systems", "computer science",
+            "machine learning", "statistics", "high performance ml",
         }
         topic_lower = topic.lower()
         is_academic = any(t in topic_lower for t in ACADEMIC_TOPICS)
 
-        # Current course codes for Spring 2026
-        CURRENT_COURSE_CODES = {
-            "coms4118", "4118",         # OS
-            "csee4119", "4119",         # Networks
-            "csor4231", "4231",         # Algorithms
-            "busigu4013", "4013",       # Financial Accounting
+        # Completed course codes (all historical — for content matching only)
+        COMPLETED_COURSE_CODES = {
+            "coms4118", "4118",         # OS (Spring 2026)
+            "csee4119", "4119",         # Networks (Spring 2026)
+            "csor4231", "4231",         # Algorithms (Spring 2026)
+            "busigu4013", "4013",       # Financial Accounting (Spring 2026)
         }
-        CURRENT_COURSE_KEYWORDS = {
-            "operating system", "os midterm", "coms4118",
-            "computer network", "networks midterm", "csee4119",
+        COMPLETED_COURSE_KEYWORDS = {
+            "operating system", "coms4118",
+            "computer network", "csee4119",
             "algorithms", "csor4231",
-            "financial accounting", "accounting midterm", "busigu4013",
+            "financial accounting", "busigu4013",
         }
 
         queries = self._expand_query(topic)
@@ -1892,24 +1895,21 @@ KNOWLEDGE BASE:
         course_scored = [x for x in scored_all if x[2].get("source") in course_sources]
         other_scored = [x for x in scored_all if x[2].get("source") not in course_sources]
 
-        # For academic topics: heavily prefer current course material
+        # For academic topics: prefer course material (all completed but still useful for review)
         if is_academic and course_scored:
-            # Prioritize canvas chunks from current courses by boosting their scores
-            def _is_current_course(meta: dict) -> bool:
+            def _matches_course(meta: dict) -> bool:
                 title = (meta.get("title") or "").lower()
                 course = (meta.get("course") or "").lower()
                 combined = title + " " + course
-                return any(code in combined for code in CURRENT_COURSE_CODES) or \
-                       any(kw in combined for kw in CURRENT_COURSE_KEYWORDS)
+                return any(code in combined for code in COMPLETED_COURSE_CODES) or \
+                       any(kw in combined for kw in COMPLETED_COURSE_KEYWORDS)
 
-            current_course_scored = [x for x in course_scored if _is_current_course(x[2])]
-            other_course_scored = [x for x in course_scored if not _is_current_course(x[2])]
+            matched_course_scored = [x for x in course_scored if _matches_course(x[2])]
+            other_course_scored = [x for x in course_scored if not _matches_course(x[2])]
 
-            if current_course_scored:
-                # Heavily prioritize current course material: up to 12 from current + 4 other + 4 misc
-                scored = (current_course_scored[:12] + other_course_scored[:4] + other_scored[:4])[:n_results]
+            if matched_course_scored:
+                scored = (matched_course_scored[:12] + other_course_scored[:4] + other_scored[:4])[:n_results]
             else:
-                # Fall back to all course material
                 scored = (course_scored[:15] + other_scored[:5])[:n_results]
         else:
             scored = scored_all[:n_results]
@@ -1960,10 +1960,10 @@ KNOWLEDGE BASE:
             )
 
         raw = self._chat(
-            f'You are Jimmy — {JIMMY_USER_NAME}\'s personal exam tutor. Today is {today}.{exam_context}\n\n'
-            f'{JIMMY_USER_NAME} is preparing for "{topic}" at difficulty: {difficulty.upper()}.\n'
+            f'You are Jimmy — {JIMMY_USER_NAME}\'s personal tutor. Today is {today}.{exam_context}\n\n'
+            f'{JIMMY_USER_NAME} is practicing "{topic}" at difficulty: {difficulty.upper()}.\n'
             f'{diff_note}\n\n'
-            f'Based ONLY on his actual course materials and notes below, generate exactly 6 exam-quality exercises.\n\n'
+            f'Based ONLY on his actual course materials and notes below, generate exactly 6 exercises.\n\n'
             f'INTERLEAVING RULE: Mix topic types — do NOT ask 3 questions about the same sub-concept in a row. '
             f'Alternate between different aspects of {topic} (e.g., OS: scheduling → memory → synchronization → file systems → scheduling again). '
             f'Research shows interleaving improves retention vs blocked practice.\n\n'
@@ -2405,8 +2405,9 @@ KNOWLEDGE BASE:
             f"What is the deep reason the same pattern appears in both domains? What does this reveal about how the world works?\n\n"
             f"TIME SCALE MIXING — prioritize sparks that connect things from different time scales: "
             f"something older (e.g. a book, a Torah insight, a past project) with something from recent weeks. "
-            f"- {JIMMY_USER_NAME} GRADUATED from Columbia undergrad in May 2025. Most Columbia courses are DONE (Fundies, Data Structures, etc). The only ones that might still be relevant are for his masters - Summer 2026 (Machine Learning and Statistics), and Fall 2026 (High Performace Machine Learning) ones, or Spring 2026 (OS, Networks, Algorithms, Accounting) — but even those are mostly historical since he's almost done with finals."
-            f"NEVER reference an old course, midterm, assignment, or exam as current or upcoming. They are historical.\n"
+            f"- {JIMMY_USER_NAME} GRADUATED from Columbia (BS May 2025, MS coursework through Spring 2026). "
+            f"ALL Columbia courses are COMPLETED — OS, Networks, Algorithms, Accounting, ML, Stats, etc. "
+            f"NEVER reference any course, midterm, assignment, or exam as current or upcoming. They are ALL historical.\n"
             f"ACTIONABLE INSIGHT — end the connection with: 'This means when you see X in [domain A], look for Y in [domain B]'\n\n"
             f"STRICT FIELD RULES:\n"
             f"- title: 5-10 words. A vivid, curious observation or question — NOT 'The Connection Between X and Y'\n"
@@ -2764,21 +2765,20 @@ KNOWLEDGE BASE:
         except Exception:
             pass
 
-        # Sample a diverse mix, biased toward exam topics if available
-        # Current semester: OS, Networks, Algorithms, Accounting
-        CURRENT_COURSE_SEEDS = [
-            "operating systems process thread memory scheduling virtual",
-            "computer networks TCP IP routing protocols packet",
-            "algorithms complexity sorting graph dynamic programming",
-            "financial accounting balance sheet income statement GAAP",
+        # Sample a diverse mix — focus on current interests and Datadog prep
+        INTEREST_SEEDS = [
+            "Datadog observability monitoring infrastructure engineering",
+            "distributed systems query engine Arrow Trino ClickHouse",
+            "machine learning AI neural networks deep learning",
+            "Torah parasha Jewish wisdom halacha",
         ]
         VARIETY_SEEDS = [
             "book reading highlight insight quote",
             "personal note reflection idea observation",
         ]
         seed_queries = (
-            upcoming_exam_topics[:3] +  # bias toward exam topics
-            CURRENT_COURSE_SEEDS +
+            upcoming_exam_topics[:3] +
+            INTEREST_SEEDS +
             [
                 "interesting surprising counterintuitive fact",
                 "technical concept definition term explained",
@@ -2795,11 +2795,9 @@ KNOWLEDGE BASE:
         _ninety_days_ago = (_date2.today() - _td(days=90)).isoformat()
         _six_months_ago  = (_date2.today() - _td(days=180)).isoformat()
 
-        # Preferred sources for current-semester content
-        CURRENT_SOURCES   = {"canvas", "apple_notes", "note"}
+        # Preferred sources for recent personal content
+        CURRENT_SOURCES   = {"apple_notes", "note", "notion", "file", "gdrive"}
         VARIETY_SOURCES   = {"goodreads", "kindle", "readwise", "pocket", "spotify", "podcast"}
-        OLD_DIST_SYS_KWORDS = {"distributed", "consensus", "replication", "raft", "paxos",
-                               "fault tolerance", "go channel", "goroutine"}
 
         def _query_one(q: str):
             try:
@@ -2884,16 +2882,17 @@ KNOWLEDGE BASE:
 
         prompt = f"""Today is {today}. {_user_prompt_context()}{exam_context_note}
 
-Below are excerpts from his notes, courses, meetings, and research.
+Below are excerpts from his notes, reading, meetings, and past coursework.
 
-Generate TWO things for today's daily card. Both should make him think "oh right, I need to remember that."
+Generate TWO things for today's daily card. Both should make him think "oh, that's interesting" or be relevant to his current focus (Datadog prep, personal interests, Torah).
 
-1. FACT — A specific, surprising thing from his actual course material or notes. NOT a generic CS fact you could find on Wikipedia. Think: a counterintuitive result, a subtle mechanism, a specific algorithm property, a GAAP nuance, a networking edge case. Something that would appear on an exam and that he might have glossed over.
-   - If exams are upcoming, make this exam-prep relevant.
-   - 2-3 sentences max. Specific enough that it could be a standalone exam question.
+1. FACT — A specific, surprising thing from his notes, reading, or past course material. NOT a generic fact from Wikipedia. Think: a counterintuitive insight, a subtle engineering concept, a connection between domains, a Torah idea with depth. Something genuinely worth knowing.
+   - Prefer recent content and current interests (Datadog, observability, query engines, AI/ML, Torah).
+   - Past course material (OS, Networks, Algorithms, Accounting) is fine if the fact is genuinely interesting, but frame it as review not current study.
+   - 2-3 sentences max. Specific and memorable.
 
-2. VOCAB WORD — A term from what he's currently studying (OS, Networks, Algorithms, or Accounting). Not a word he definitely knows — a term that's used in the course but whose precise meaning he might be fuzzy on. OR a term with a subtle distinction (e.g., thrashing vs. swapping, congestion vs. flow control, revenue vs. income).
-   - If exams are upcoming, pick something exam-relevant.
+2. VOCAB WORD — A term from his recent notes, reading, or Datadog prep topics. Not a word he definitely knows — something whose precise meaning he might be fuzzy on. OR a term with a subtle distinction relevant to his work or interests.
+   - Prefer terms relevant to his upcoming role (observability, distributed systems, query engines) or current reading.
 
 EXCERPTS:
 {snippets}
@@ -2902,12 +2901,12 @@ Respond ONLY with valid JSON (no markdown fences):
 {{
   "fact": {{
     "text": "The specific, surprising fact or insight — 2-3 sentences, standalone and memorable.",
-    "source": "Specific source (e.g. 'OS course — virtual memory lecture', 'Networks — TCP/IP notes')"
+    "source": "Specific source (e.g. 'Your notes on X', 'From your reading of Y')"
   }},
   "vocab": {{
     "word": "The exact term",
     "definition": "One precise, complete sentence definition — technical but clear.",
-    "context": "One sentence on why this matters or where it trips people up in his courses.",
+    "context": "One sentence on why this matters or where it's relevant to his work/interests.",
     "source": "Specific source"
   }}
 }}"""

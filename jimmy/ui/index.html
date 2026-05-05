@@ -12,6 +12,8 @@
   <meta name="theme-color" content="#111113" media="(prefers-color-scheme: dark)">
   <meta name="theme-color" content="#f7f7f8" media="(prefers-color-scheme: light)">
   <link rel="manifest" href="/manifest.json">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="apple-touch-icon" href="/favicon.svg">
 
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
@@ -356,7 +358,7 @@
     .chip-sub   { font-size: 10px; color: var(--text-3); }
 
     /* ── STAT CARDS ───────────────────────────────────────────────── */
-    .stat-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; margin-bottom: 28px; }
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(150px,1fr)); gap: 12px; margin-bottom: 28px; }
     .stat-card {
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 14px; padding: 20px 22px;
@@ -376,6 +378,20 @@
 
     /* ── CARD ─────────────────────────────────────────────────────── */
     .card { padding: 16px 0; border-bottom: 1px solid var(--border); }
+
+    /* ── UTILITY TRANSITIONS ──────────────────────────────────────── */
+    .surface-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; transition: border-color 0.18s var(--ease), box-shadow 0.18s var(--ease), transform 0.18s var(--ease);
+    }
+    .surface-card:hover { border-color: var(--border-mid); box-shadow: var(--shadow-md); transform: translateY(-1px); }
+
+    /* Secondary button consistent style */
+    .btn-secondary {
+      background: var(--surface-2); border: 1px solid var(--border-mid);
+      color: var(--text); transition: all 0.18s var(--ease);
+    }
+    .btn-secondary:hover { background: var(--surface-3); border-color: var(--border-strong); }
 
     /* ── CALENDAR ─────────────────────────────────────────────────── */
     .cal-day { margin-bottom: 24px; }
@@ -542,6 +558,10 @@
       #content { -webkit-overflow-scrolling: touch; }
       .answer-wrap { padding: 20px 16px; }
       .drawer-panel { width: 100%; }
+      .stat-grid { grid-template-columns: 1fr !important; }
+      #thread-grid { grid-template-columns: 1fr !important; }
+      #daily-extras { grid-template-columns: 1fr !important; }
+      .ingest-wrap { padding: 24px 16px !important; }
     }
 
     /* ── SELECTION ────────────────────────────────────────────────── */
@@ -552,7 +572,7 @@
 
 <nav id="sidebar">
   <div class="sidebar-logo">
-    <div class="logo-mark"></div>
+    <img src="/logo.svg" alt="Jimmy" class="logo-mark" style="width:24px;height:24px;border-radius:0;background:none;box-shadow:none;">
     <span class="logo-name">Jimmy</span>
   </div>
 
@@ -675,7 +695,7 @@
   ondragover="event.preventDefault();$('global-drop-overlay').style.display='flex'"
   ondragleave="if(event.target===$('global-drop-overlay'))$('global-drop-overlay').style.display='none'"
   ondrop="handleGlobalDrop(event)">
-  <div id="global-drop-overlay" style="display:none;position:absolute;inset:0;z-index:999;background:rgba(193,68,14,0.08);backdrop-filter:blur(2px);align-items:center;justify-content:center;flex-direction:column;gap:12px;pointer-events:all;" onclick="this.style.display='none'">
+  <div id="global-drop-overlay" style="display:none;position:absolute;inset:0;z-index:999;background:var(--accent-dim);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);align-items:center;justify-content:center;flex-direction:column;gap:12px;pointer-events:all;" onclick="this.style.display='none'">
     <svg width="48" height="48" viewBox="0 0 32 32" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round"><path d="M7 4a2 2 0 0 1 2-2h12l6 6v20a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V4Z"/><polyline points="21,2 21,8 27,8"/><line x1="16" y1="12" x2="16" y2="22"/><line x1="11" y1="17" x2="21" y2="17"/></svg>
     <div style="font-size:16px;font-weight:600;color:var(--accent)">Drop file to ingest</div>
     <div style="font-size:13px;color:var(--text-2)">PDF, Word, Markdown, images, JSON</div>
@@ -773,7 +793,7 @@ function skeletonNews() {
 
 // ── Client-side response cache ─────────────────────────────────────────
 const _apiCache = {};
-const _API_CACHE_TTL = { '/digest': 300000, '/news': 300000, '/today': 300000, '/library': 600000, '/recent': 120000, '/upcoming': 120000, '/status': 30000, '/news/summary': 300000 };
+const _API_CACHE_TTL = { '/digest': 300000, '/news': 300000, '/today': 300000, '/library': 600000, '/recent': 120000, '/upcoming': 120000, '/status': 300000, '/news/summary': 300000, '/suggestions': 300000 };
 
 function _cacheTtl(path) {
   const base = path.split('?')[0];
@@ -961,15 +981,15 @@ function renderAsk() {
 
   setTimeout(() => { const el=$('ask-inp'); if(el){ el.focus(); autoResize(el); } }, 50);
 
-  // Load personalized suggestions
-  fetch('/suggestions').then(r=>r.json()).then(d=>{
+  // Load personalized suggestions (cached to avoid LLM call on every page visit)
+  cachedApi('/suggestions').then(d=>{
     const grid = $('suggestion-grid');
     if(!grid || !d.suggestions?.length) return;
     grid.innerHTML = d.suggestions.map(q=>`<button class="suggestion" onclick="quickAsk(${JSON.stringify(q)})">${esc(q)}</button>`).join('');
   }).catch(()=>{});
 
-  // Browse by source — load from /status
-  fetch('/status').then(r=>r.json()).then(d=>{
+  // Browse by source — load from /status (use cached version to avoid 152K metadata scan)
+  cachedApi('/status').then(d=>{
     const el = $('source-browse'); if(!el) return;
     const sources = d.sources || {};
     const sorted = Object.entries(sources).sort((a,b)=>b[1]-a[1]).slice(0,8);
@@ -1226,8 +1246,7 @@ async function renderDigest(forceRefresh=false) {
         <!-- Sections -->
         ${bodyHtml}
 
-        <!-- Today's study schedule from study-plan -->
-        <div id="study-schedule" style="margin-bottom:28px;"></div>
+        <!-- TODO: study-schedule feature needs /study-plan endpoint to be built -->
 
         <!-- Daily extras (fact + vocab + parasha) -->
         <div id="daily-extras" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:28px;"></div>
@@ -1256,31 +1275,10 @@ async function renderDigest(forceRefresh=false) {
 
     renderSources($('src'), sources);
 
-    // Load study plan for today's schedule
-    fetch('/study-plan').then(r=>r.json()).then(d=>{
-      const el = $('study-schedule');
-      if (!el) return;
-      const today = (d.plan||[]).find(p=>p.is_today);
-      if (!today || !today.schedule?.length) { el.style.display='none'; return; }
-      const schedHtml = today.schedule.map(s => `
-        <div style="display:flex;align-items:flex-start;gap:12px;padding:6px 0;">
-          <div style="font-size:11.5px;color:var(--text-3);width:50px;flex-shrink:0;padding-top:1px;">${esc(s.time||'')}</div>
-          <div style="flex:1;">
-            <div style="font-size:13px;font-weight:500;color:var(--text);">${esc(s.activity||'')}</div>
-            ${s.topic ? `<div style="font-size:11.5px;color:var(--text-3);">${esc(s.topic)}</div>` : ''}
-          </div>
-          <div style="font-size:11px;color:var(--text-3);flex-shrink:0;">${s.duration_min||''}m</div>
-        </div>`).join('');
-      el.innerHTML = `
-        <div style="margin-bottom:28px;padding-bottom:28px;border-bottom:1px solid var(--border);">
-          <div style="font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--text-3);margin-bottom:10px;">📅 Today's Schedule · ${esc(today.date||'')}</div>
-          <div style="font-size:14.5px;font-weight:600;color:var(--text);margin-bottom:8px;">${esc(today.focus||'')}</div>
-          <div>${schedHtml}</div>
-          ${d.exams?.length ? `<div style="margin-top:10px;padding:8px 12px;background:rgba(193,68,14,.06);border:1px solid rgba(193,68,14,.2);border-radius:8px;font-size:12.5px;color:var(--accent);">
-            Upcoming: ${d.exams.map(e=>`${esc(e.name)} (${e.days_remaining===0?'today':e.days_remaining+'d'})`).join(' · ')}
-          </div>` : ''}
-        </div>`;
-    }).catch(() => { const el=$('study-schedule'); if(el) el.style.display='none'; });
+    // TODO: /study-plan endpoint was never implemented. Study schedule feature
+    // needs a backend endpoint that generates a daily study plan from the KB.
+    // For now, hide the study-schedule container silently.
+    { const el=$('study-schedule'); if(el) el.style.display='none'; }
 
     // Load daily fact + vocab (24hr cache, fast)
     fetch('/daily').then(r=>r.json()).then(d=>{
@@ -1331,12 +1329,12 @@ async function renderDigest(forceRefresh=false) {
       const extrasEl = $('daily-extras');
       if (!extrasEl) return;
       const parashaHtml = `
-        <div style="background:linear-gradient(135deg,#fdf6ee,#f5ede0);border:1px solid #e8d5bc;border-radius:12px;padding:16px;grid-column:1/-1;">
+        <div style="background:var(--surface-2);border:1px solid var(--border-mid);border-radius:12px;padding:16px;grid-column:1/-1;">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
-            <span style="font-size:16px;">✡</span>
-            <div style="font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#8b6914;">This Week's Parasha</div>
+            <span style="font-size:16px;">&#x2721;</span>
+            <div style="font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--text-3);">This Week's Parasha</div>
             <a href="https://www.chabad.org/parasha" target="_blank" rel="noopener"
-              style="margin-left:auto;font-size:11px;color:#c1440e;text-decoration:none;font-family:var(--font);">chabad.org →</a>
+              style="margin-left:auto;font-size:11px;color:var(--link);text-decoration:none;font-family:var(--font);">chabad.org &#x2192;</a>
           </div>
           <div style="font-size:13.5px;color:var(--text);line-height:1.7;">${marked.parse(d.answer)}</div>
         </div>`;
@@ -1405,8 +1403,7 @@ function renderSearch() {
   $('content').innerHTML = `
     <div style="max-width:800px;padding:24px 28px 60px;" class="fade-up">
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;" id="search-source-pills">
-        ${SEARCH_SOURCES.map(s=>`<button onclick="searchSetSource('${s}')"
-          style="padding:5px 13px;border-radius:100px;font-family:var(--font);font-size:12.5px;font-weight:${s==='All'?600:400};cursor:pointer;white-space:nowrap;border:1px solid ${s==='All'?'var(--text)':'var(--border)'};background:${s==='All'?'var(--text)':'transparent'};color:${s==='All'?'#fff':'var(--text-2)'};"
+        ${SEARCH_SOURCES.map(s=>`<button class="pill${s==='All'?' active':''}" onclick="searchSetSource('${s}')"
           id="search-src-${s}">${s==='All'?'All':s.replace(/_/g,' ')}</button>`).join('')}
       </div>
       <div id="search-results" style="margin-top:4px;">
@@ -1432,12 +1429,7 @@ function searchSetSource(src) {
   _searchSource = src; _searchOffset = 0;
   SEARCH_SOURCES.forEach(s => {
     const btn = $(`search-src-${s}`);
-    if (!btn) return;
-    const active = s === src;
-    btn.style.fontWeight = active ? 600 : 400;
-    btn.style.border = `1px solid ${active ? 'var(--text)' : 'var(--border)'}`;
-    btn.style.background = active ? 'var(--text)' : 'transparent';
-    btn.style.color = active ? '#fff' : 'var(--text-2)';
+    if (btn) btn.classList.toggle('active', s === src);
   });
   if (_searchQuery) doSearch();
 }
@@ -1497,8 +1489,8 @@ function _renderSearchResults(append) {
         <div style="display:flex;align-items:center;gap:8px;padding-left:28px;">
           ${r.date ? `<span style="font-size:11px;color:var(--text-3);">${esc(r.date)}</span>` : ''}
           <button onclick="quickAsk(${askQ});setMode('ask');"
-            style="font-size:11.5px;color:var(--accent);background:none;border:1px solid rgba(193,68,14,0.2);border-radius:6px;padding:3px 9px;cursor:pointer;font-family:var(--font);transition:background .1s;"
-            onmouseover="this.style.background='rgba(193,68,14,0.06)'" onmouseout="this.style.background='none'">Ask about this →</button>
+            style="font-size:11.5px;color:var(--accent);background:none;border:1px solid var(--accent-glow);border-radius:6px;padding:3px 9px;cursor:pointer;font-family:var(--font);transition:background .1s;"
+            onmouseover="this.style.background='var(--accent-dim)'" onmouseout="this.style.background='none'">Ask about this →</button>
         </div>
       </div>`;
   }).join('');
@@ -1848,11 +1840,12 @@ function _shufflePractice(list) {
 async function loadPracticeFocus() {
   const host = $('practice-focus');
   if (!host) return;
-  host.innerHTML = `<div style="margin-bottom:32px;padding:20px 22px;background:linear-gradient(135deg,#fff5f0,#ffeee6);border:1.5px solid #f0c8b4;border-radius:16px;">${loading('Loading current practice focus…')}</div>`;
+  host.innerHTML = `<div style="margin-bottom:32px;padding:20px 22px;background:var(--surface);border:1.5px solid var(--border-mid);border-radius:16px;">${loading('Loading current practice focus…')}</div>`;
 
   try {
+    // TODO: /study-plan endpoint not yet implemented — skip it to avoid 404s
     const [plan, dd] = await Promise.all([
-      api('/study-plan').catch(() => ({})),
+      Promise.resolve({}),
       api('/datadog-prep').catch(() => ({})),
     ]);
     const examCards = (plan.exams || []).slice(0, 2).map(ex => ({
@@ -1895,7 +1888,7 @@ async function loadPracticeFocus() {
       : '';
 
     host.innerHTML = `
-      <div style="margin-bottom:32px;padding:20px 22px;background:linear-gradient(135deg,#fff5f0,#ffeee6);border:1.5px solid #f0c8b4;border-radius:16px;">
+      <div style="margin-bottom:32px;padding:20px 22px;background:var(--surface);border:1.5px solid var(--border-mid);border-radius:16px;">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;gap:12px;">
           <div style="display:flex;align-items:center;gap:8px;">
             <span style="font-size:20px;">✦</span>
@@ -1906,13 +1899,13 @@ async function loadPracticeFocus() {
             <div style="font-size:18px;font-weight:700;color:var(--accent);letter-spacing:-0.5px;">${dd.days_until_start ?? ''}${dd.days_until_start != null ? ' days' : ''}</div>
           </div>
         </div>
-        <div style="font-size:12.5px;color:var(--text-3);margin-bottom:16px;">A rotating mix of exam topics, live study-plan focus, and Datadog query-engine prep.</div>
+        <div style="font-size:12.5px;color:var(--text-3);margin-bottom:16px;">A rotating mix of Datadog query-engine prep and general review topics.</div>
         <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;">
           ${chosen.map(t => `
             <button onclick="quickPracticeEncoded('${encodeURIComponent(t.q)}')"
-              style="text-align:left;padding:12px 14px;background:var(--surface);border:1px solid #e8c9b8;border-radius:10px;cursor:pointer;font-family:var(--font);transition:all .12s;"
-              onmouseover="this.style.background='#fff8f5';this.style.borderColor='#c1440e'"
-              onmouseout="this.style.background='var(--surface)';this.style.borderColor='#e8c9b8'">
+              style="text-align:left;padding:12px 14px;background:var(--surface-2);border:1px solid var(--border-mid);border-radius:10px;cursor:pointer;font-family:var(--font);transition:all .12s;"
+              onmouseover="this.style.background='var(--surface-3)';this.style.borderColor='var(--accent)'"
+              onmouseout="this.style.background='var(--surface-2)';this.style.borderColor='var(--border-mid)'">
               <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
                 <div style="min-width:0;">
                   <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:2px;">${esc(t.label)}</div>
@@ -2040,14 +2033,14 @@ function showExercise(idx) {
         ? `<div id="mcq-options" style="display:flex;flex-direction:column;gap:8px;margin-bottom:4px;">
             ${ex.options.map((opt,oi)=>`<button id="mcq-opt-${oi}" onclick="selectMCQ(${oi})" data-val="${esc(opt)}"
               style="text-align:left;padding:11px 15px;border:1.5px solid var(--border-mid);border-radius:10px;background:var(--surface);color:var(--text);font-family:var(--font);font-size:13.5px;cursor:pointer;transition:all .12s;line-height:1.5;"
-              onmouseover="if(!this.dataset.selected)this.style.borderColor='rgba(0,0,0,0.25)'"
+              onmouseover="if(!this.dataset.selected)this.style.borderColor='var(--border-strong)'"
               onmouseout="if(!this.dataset.selected)this.style.borderColor='var(--border-mid)'">${esc(opt)}</button>`).join('')}
            </div>
            <input type="hidden" id="ex-answer" value="">`
         : `<textarea id="ex-answer" rows="${ex.type==='coding'?8:3}"
             style="width:100%;font-family:${ex.type==='coding'?'var(--mono)':'var(--font)'};font-size:${ex.type==='coding'?'13px':'14px'};background:var(--surface);border:1.5px solid var(--border-mid);border-radius:12px;padding:12px 14px;color:var(--text);outline:none;line-height:1.6;transition:border-color .15s;resize:vertical;"
             placeholder="${ex.type==='coding' ? '# Write your code here…' : 'Type your answer…'}"
-            onfocus="this.style.borderColor='rgba(0,0,0,0.3)';this.style.boxShadow='0 0 0 3px rgba(0,0,0,0.05)'"
+            onfocus="this.style.borderColor='var(--accent)';this.style.boxShadow='0 0 0 3px var(--accent-dim)'"
             onblur="this.style.borderColor='var(--border-mid)';this.style.boxShadow='none'"></textarea>`
       }
 
@@ -2083,8 +2076,8 @@ function selectMCQ(idx) {
   // Select chosen option
   const btn = $(`mcq-opt-${idx}`);
   if (btn) {
-    btn.style.borderColor = 'rgba(0,0,0,0.35)';
-    btn.style.background = 'var(--surface-2)';
+    btn.style.borderColor = 'var(--accent)';
+    btn.style.background = 'var(--accent-dim)';
     btn.dataset.selected = '1';
   }
   // Store value in hidden input
@@ -2251,7 +2244,7 @@ async function startLesson() {
 
 function _learnShowAlert(msg) {
   const el = $('learn-alert');
-  if (el) el.innerHTML = `<div style="padding:10px 14px;background:#fff3f0;border:1px solid #ffd5cc;border-radius:8px;font-size:13px;color:#c0392b;">${esc(msg)}</div>`;
+  if (el) el.innerHTML = `<div class="alert alert-error">${esc(msg)}</div>`;
 }
 
 function _learnHdr() {
@@ -2294,12 +2287,12 @@ function _learnShowCard() {
         <div style="font-size:20px;font-weight:800;letter-spacing:-0.3px;font-family:var(--serif);margin-bottom:14px;">${esc(card.title||'')}</div>
         <div style="font-size:14.5px;color:var(--text-2);line-height:1.78;margin-bottom:16px;">${esc(card.body||'')}</div>
         ${card.analogy ? `
-        <div style="background:linear-gradient(135deg,#fff8f0,#fff3e8);border:1px solid #f0dcc8;border-radius:12px;padding:14px 16px;margin-bottom:16px;">
-          <div style="font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#a0652a;margin-bottom:5px;">🔄 Think of it like…</div>
+        <div style="background:var(--surface-2);border:1px solid var(--border-mid);border-radius:12px;padding:14px 16px;margin-bottom:16px;">
+          <div style="font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:5px;">Think of it like...</div>
           <div style="font-size:13.5px;color:var(--text);line-height:1.6;">${esc(card.analogy)}</div>
         </div>` : ''}
         ${card.key_point ? `
-        <div style="background:rgba(193,68,14,.06);border-left:3px solid var(--accent);border-radius:0 8px 8px 0;padding:10px 14px;">
+        <div style="background:var(--accent-dim);border-left:3px solid var(--accent);border-radius:0 8px 8px 0;padding:10px 14px;">
           <div style="font-size:13.5px;font-weight:600;color:var(--text);">${esc(card.key_point)}</div>
         </div>` : ''}
       </div>
@@ -2332,12 +2325,12 @@ function _learnShowCard() {
         <div style="display:flex;gap:12px;" id="learn-opts">
           <button id="learn-opt-0" onclick="_learnAnswerTF(true, ${JSON.stringify(card.answer)}, ${JSON.stringify(card.explanation||'')})"
             style="flex:1;padding:16px;border:1.5px solid var(--border-mid);border-radius:14px;background:var(--surface);font-family:var(--font);font-size:16px;font-weight:700;color:var(--text);cursor:pointer;transition:all .15s;"
-            onmouseover="if(!_learnAnswered)this.style.borderColor='#27ae60'"
-            onmouseout="if(!_learnAnswered)this.style.borderColor='var(--border-mid)'">✓ True</button>
+            onmouseover="if(!_learnAnswered)this.style.borderColor='var(--success)'"
+            onmouseout="if(!_learnAnswered)this.style.borderColor='var(--border-mid)'">\u2713 True</button>
           <button id="learn-opt-1" onclick="_learnAnswerTF(false, ${JSON.stringify(card.answer)}, ${JSON.stringify(card.explanation||'')})"
             style="flex:1;padding:16px;border:1.5px solid var(--border-mid);border-radius:14px;background:var(--surface);font-family:var(--font);font-size:16px;font-weight:700;color:var(--text);cursor:pointer;transition:all .15s;"
-            onmouseover="if(!_learnAnswered)this.style.borderColor='#e74c3c'"
-            onmouseout="if(!_learnAnswered)this.style.borderColor='var(--border-mid)'">✗ False</button>
+            onmouseover="if(!_learnAnswered)this.style.borderColor='var(--danger)'"
+            onmouseout="if(!_learnAnswered)this.style.borderColor='var(--border-mid)'">\u2717 False</button>
         </div>
         <div id="learn-feedback" style="margin-top:16px;"></div>
       </div>`;
@@ -2385,13 +2378,13 @@ function _learnAnswer(idx, correctLetter, opts, explanation) {
     if (!btn) return;
     btn.style.cursor = 'default';
     if (i === correctIdx) {
-      btn.style.background = '#e8f8ee';
-      btn.style.borderColor = '#27ae60';
-      btn.style.color = '#1a7a3c';
+      btn.style.background = 'rgba(52,211,153,0.12)';
+      btn.style.borderColor = 'var(--success)';
+      btn.style.color = 'var(--success)';
     } else if (i === idx && !isRight) {
-      btn.style.background = '#fff0f0';
-      btn.style.borderColor = '#e74c3c';
-      btn.style.color = '#c0392b';
+      btn.style.background = 'rgba(248,113,113,0.12)';
+      btn.style.borderColor = 'var(--danger)';
+      btn.style.color = 'var(--danger)';
     } else {
       btn.style.opacity = '0.45';
     }
@@ -2409,12 +2402,12 @@ function _learnAnswerTF(chosen, correctAnswer, explanation) {
   if (trueBtn && falseBtn) {
     trueBtn.style.cursor = 'default'; falseBtn.style.cursor = 'default';
     if (correctAnswer === true) {
-      trueBtn.style.background = '#e8f8ee'; trueBtn.style.borderColor = '#27ae60'; trueBtn.style.color = '#1a7a3c';
-      if (!isRight) { falseBtn.style.background = '#fff0f0'; falseBtn.style.borderColor = '#e74c3c'; falseBtn.style.color = '#c0392b'; }
+      trueBtn.style.background = 'rgba(52,211,153,0.12)'; trueBtn.style.borderColor = 'var(--success)'; trueBtn.style.color = 'var(--success)';
+      if (!isRight) { falseBtn.style.background = 'rgba(248,113,113,0.12)'; falseBtn.style.borderColor = 'var(--danger)'; falseBtn.style.color = 'var(--danger)'; }
       else falseBtn.style.opacity = '0.4';
     } else {
-      falseBtn.style.background = '#e8f8ee'; falseBtn.style.borderColor = '#27ae60'; falseBtn.style.color = '#1a7a3c';
-      if (!isRight) { trueBtn.style.background = '#fff0f0'; trueBtn.style.borderColor = '#e74c3c'; trueBtn.style.color = '#c0392b'; }
+      falseBtn.style.background = 'rgba(52,211,153,0.12)'; falseBtn.style.borderColor = 'var(--success)'; falseBtn.style.color = 'var(--success)';
+      if (!isRight) { trueBtn.style.background = 'rgba(248,113,113,0.12)'; trueBtn.style.borderColor = 'var(--danger)'; trueBtn.style.color = 'var(--danger)'; }
       else trueBtn.style.opacity = '0.4';
     }
   }
@@ -2429,15 +2422,15 @@ function _learnShowFeedback(isRight, explanation) {
   const label = isRight
     ? ['Nailed it!', 'You got it!', 'Exactly right!', 'Perfect!'][Math.floor(Math.random()*4)]
     : ['Not quite.', 'Almost!', 'Good try.', 'Close!'][Math.floor(Math.random()*4)];
-  const color = isRight ? '#e8f8ee' : '#fff8e8';
-  const border = isRight ? '#27ae60' : '#f39c12';
-  const textColor = isRight ? '#1a7a3c' : '#8a5700';
+  const color = isRight ? 'rgba(52,211,153,0.12)' : 'rgba(251,191,36,0.12)';
+  const border = isRight ? 'var(--success)' : 'var(--warning)';
+  const textColor = isRight ? 'var(--success)' : 'var(--warning)';
 
   fb.innerHTML = `
     <div style="background:${color};border:1px solid ${border};border-radius:12px;padding:14px 16px;">
       <div style="font-size:14px;font-weight:700;color:${textColor};margin-bottom:4px;">${icon} ${label}${isRight ? ' <span style="font-size:12px;font-weight:400;">+10 XP</span>' : ''}</div>
       ${explanation ? `<div style="font-size:13px;color:var(--text-2);line-height:1.6;margin-bottom:12px;">${esc(explanation)}</div>` : ''}
-      <button onclick="_learnNext()" class="btn btn-primary" style="width:100%;padding:11px;border-radius:10px;font-size:14px;">Continue →</button>
+      <button onclick="_learnNext()" class="btn btn-primary" style="width:100%;padding:11px;border-radius:10px;font-size:14px;">Continue \u2192</button>
     </div>`;
 }
 
@@ -3046,10 +3039,10 @@ function _renderLibraryGrid() {
       ${currentHtml}
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap;">
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
-          ${shelves.map(s=>`<button onclick="libSetShelf('${s}')" style="padding:5px 13px;border-radius:100px;font-family:var(--font);font-size:12.5px;font-weight:${_libraryShelf===s?600:400};cursor:pointer;white-space:nowrap;transition:all .12s;border:1px solid ${_libraryShelf===s?'var(--text)':'var(--border)'};background:${_libraryShelf===s?'var(--text)':'transparent'};color:${_libraryShelf===s?'#fff':'var(--text-2)'};">${shelfLabels[s]||s}</button>`).join('')}
+          ${shelves.map(s=>`<button class="pill${_libraryShelf===s?' active':''}" onclick="libSetShelf('${s}')">${shelfLabels[s]||s}</button>`).join('')}
         </div>
         <input type="text" id="lib-search" value="${esc(_librarySearch)}" placeholder="Search…" oninput="libSearch(this.value)"
-          style="flex:1;min-width:140px;max-width:240px;padding:6px 12px;border:1px solid var(--border-mid);border-radius:8px;font-family:var(--font);font-size:13px;outline:none;background:var(--surface);">
+          style="flex:1;min-width:140px;max-width:240px;padding:6px 12px;border:1px solid var(--border-mid);border-radius:8px;font-family:var(--font);font-size:13px;outline:none;background:var(--surface);color:var(--text);">
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:20px;">
         ${filtered.map((b,i)=>{

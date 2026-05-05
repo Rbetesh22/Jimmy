@@ -1,16 +1,44 @@
-extension/
+# Version control
+.git/
+
+# Virtual environment
 .venv/
+
+# Python caches
 __pycache__/
 *.pyc
 *.pyo
-.git/
-ios/
-.env
-.env.local
 *.egg-info/
 dist/
 build/
-.pytest_cache/
+
+# Client apps (not needed in server image)
+extension/
+ios/
+
+# Secrets (never bake into image)
+.env
+.env.local
+.env.template
+*.key
+*.pem
+google_token_*.json
+
+# Data (mounted as volume, not baked in)
+*.db
+*.sqlite
+accounts.db
+bm25_cache.pkl
+bm25_index.pkl
+.jimmy/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Tests / docs
 tests/
 benchmarks/
 docs/
+*.md
