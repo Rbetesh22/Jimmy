@@ -2030,12 +2030,13 @@ def news_summary(refresh: bool = False):
         today = _date.today().strftime("%A, %B %-d, %Y")
         daypart = "morning" if now.hour < 12 else "afternoon" if now.hour < 17 else "evening" if now.hour < 22 else "tonight"
 
-        # Build headline context
+        # Build headline context — feed more articles for richer summary
         ctx_parts = []
         for cat, arts in by_cat.items():
             ctx_parts.append(f"{cat.upper()}:")
-            for a in arts[:4]:
-                ctx_parts.append(f"  - {a['title']} ({a['source']})")
+            for a in arts[:8]:
+                desc_snip = f" — {a['description'][:100]}" if a.get('description') else ""
+                ctx_parts.append(f"  - {a['title']} ({a['source']}){desc_snip}")
         ctx = "\n".join(ctx_parts)
 
         engine = get_engine()
@@ -2045,18 +2046,21 @@ def news_summary(refresh: bool = False):
             f"Today's headlines by category:\n{ctx}\n\n"
             f"Write a rich {daypart} briefing with 4 sections (use markdown ## headers). Be substantive — this is the main briefing, not a teaser.\n\n"
             f"## What's Happening\n"
-            f"Lead with Israel/Middle East if anything is there — give 3-4 sentences covering the key development, who's involved, what it means. "
-            f"If no Israel story, lead with the biggest world or political story. Be specific: names, places, numbers.\n\n"
+            f"Cover the 3-4 BIGGEST stories of the day across ALL categories — world events, politics, Israel, tech. "
+            f"Don't tunnel on one story. Each gets 1-2 sentences with specifics: names, places, numbers, stakes. "
+            f"If there's a major Israel/Middle East story, include it but don't let it dominate the whole section.\n\n"
             f"## The World Today\n"
-            f"3-4 bullets. Cover US politics, global events, and anything from the Torah/Jewish category (parasha of the week, a shiur, a Jewish community story). "
-            f"Each bullet is 1-2 sentences. Prioritize what {JIMMY_USER_NAME} would actually care about.\n\n"
+            f"4-5 bullets. US politics, global events, Torah/Jewish life (parasha, community news). "
+            f"Each bullet is 1-2 sentences. Cover breadth — this should feel like scanning a front page.\n\n"
             f"## Markets & Tech\n"
-            f"2-3 bullets on finance/markets and AI/tech. What moved, who launched what, what's the signal. Be concrete — numbers, names, companies.\n\n"
+            f"3-4 bullets on finance/markets AND AI/tech. What moved, who launched what, what's the signal. "
+            f"Be concrete — numbers, names, companies. Cover BOTH markets and tech, not just one.\n\n"
             f"## In the Game\n"
-            f"If sports stories exist, 2-3 sentences covering NBA, NHL, NFL, or other major sports. Scores, standings, trades, storylines. Be specific.\n\n"
-            f"Rules: Minimum 400 words. Be direct and specific. Write like a smart friend who reads everything, not a press release. "
-            f"Each section should feel substantive — this is the user's main news source.",
-            max_tokens=1200,
+            f"If sports stories exist, 2-3 sentences covering NBA, NHL, NFL, or other major sports. Scores, standings, trades, storylines.\n\n"
+            f"Rules: Minimum 500 words. Be direct and specific. Write like a smart friend who reads everything. "
+            f"Each section should feel substantive — this is the user's MAIN news source. "
+            f"Cover BREADTH across the headlines, don't fixate on one story.",
+            max_tokens=1500,
             tier="fast",
         )
 

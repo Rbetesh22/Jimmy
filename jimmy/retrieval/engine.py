@@ -1366,8 +1366,8 @@ class JimmyEngine:
             f"1 sentence. One specific, actionable thing tied to actual notes or work.\n\n"
             f"HARD RULES:\n"
             f"- 150-200 words. Shorter is better.\n"
-            f"- {JIMMY_USER_NAME} GRADUATED from Columbia undergrad in May 2025. Most Columbia courses are DONE (Fundies, Data Structures, etc). The only ones that might still be relevant are Spring 2026, Summer 2026 (Machine Learning and ), and Fall 2026 ones (OS, Networks, Algorithms, Accounting) — but even those are mostly historical since he's done with midterms and finals."
-            f"NEVER reference any course, midterm, assignment, or exam as current or upcoming. They are historical.\n"
+            f"- {JIMMY_USER_NAME} GRADUATED from Columbia undergrad in May 2025. Most Columbia courses are DONE (Fundies, Data Structures, etc). The only ones that might still be relevant are for his masters - Summer 2026 (Machine Learning and Statistics), and Fall 2026 (High Performace Machine Learning) ones, or Spring 2026 (OS, Networks, Algorithms, Accounting) — but even those are mostly historical since he's almost done with finals."
+            f"NEVER reference an old course, midterm, assignment, or exam as current or upcoming. They are historical.\n"
             f"- If you see contradictory information across different dates, ALWAYS prefer the most recent version. "
             f"Old plans, decisions, or preferences may have been superseded. A note from 2024 about 'registering for a course' is STALE — ignore it.\n"
             f"- For Torah/parasha: do NOT guess the parasha. If the sources mention a specific parasha, check if it makes sense for {today}. "
@@ -2205,7 +2205,7 @@ KNOWLEDGE BASE:
                 # Fallback: use semantic search to get recent-like content instead of by-ID fetch
                 try:
                     fb_res = self.store.search(
-                        "operating systems networks algorithms accounting recent study",
+                        "recent notes insights ideas project work learning",
                         n_results=min(16, len(selected_recent_ids) + 8)
                     )
                     seen_fb: set[str] = set()
@@ -2236,6 +2236,17 @@ KNOWLEDGE BASE:
                 pass
         if not recent_sample:
             return {"sparks": [], "message": "Could not fetch documents for spark. Try syncing sources."}
+
+        # Filter out low-quality recent items (short docs, meta-notes, task notes)
+        recent_sample = [
+            (d, m, i) for d, m, i in recent_sample
+            if len((d or "").strip()) >= 150
+            and not any(kw in (m.get("title", "") or "").lower() for kw in [
+                "import all", "convert all", "to do", "suggestion box", "move all",
+            ])
+        ]
+        if not recent_sample:
+            return {"sparks": [], "message": "Not enough substantive content for sparks."}
 
         # Extract abstract principles from recent content — searching with raw text
         # finds same-topic content; abstract principles find cross-domain connections.
@@ -2300,6 +2311,9 @@ KNOWLEDGE BASE:
                 if cand_id not in old_domain_by_id:
                     continue
                 if cand_meta.get("source") in SPARK_EXCLUDE:
+                    continue
+                # Skip low-substance content
+                if len((cand_doc or "").strip()) < 150:
                     continue
                 cand_domain = old_domain_by_id[cand_id]
                 if cand_domain == r_domain:
@@ -2378,9 +2392,12 @@ KNOWLEDGE BASE:
             f"  'Why exponential backoff is the same logic as Nachmanides on teshuva'\n\n"
             f"The connection field should feel like a revelation, not a comparison. Don't say 'both X and Y deal with Z' — explain WHY the same underlying mechanic appears in both domains, and what that reveals.\n\n"
             f"DIVERSITY RULES (strictly enforced):\n"
-            f"- The best sparks bridge DIFFERENT worlds: Torah ↔ CS, Israel news ↔ history, OS internals ↔ economics, sports strategy ↔ philosophy\n"
-            f"- REJECT any spark that connects two CS concepts, two academic papers from the same course, or two obviously related topics\n"
-            f"- If a pair is weak, obvious, or surface-level — OMIT IT. 3 great sparks > 8 mediocre ones\n\n"
+            f"- The best sparks bridge DIFFERENT worlds: Torah ↔ engineering, Israel news ↔ business strategy, philosophy ↔ tech\n"
+            f"- REJECT any spark that connects two obviously related topics (e.g. two tech things, two food things, two meetings)\n"
+            f"- REJECT any spark where the connection is just 'both involve X' without a genuine insight\n"
+            f"- REJECT questions like 'Is X like Y?' — the spark should ANSWER, not ask\n"
+            f"- If a pair is weak, obvious, forced, or surface-level — OMIT IT entirely. Return fewer sparks. 2 great sparks >>> 6 mediocre ones\n"
+            f"- A good test: would {JIMMY_USER_NAME} actually stop and think 'huh, I never thought of it that way'? If no, drop it.\n\n"
             f"ENGAGEMENT RULES — how to reference each item:\n"
             f"- WROTE / EDITED / BUILT / ATTENDED → {JIMMY_USER_NAME} knows this. Say 'In your notes on X...' or 'you wrote that...'\n"
             f"- SAVED → don't assume he read it. Say 'you saved a [article/video] called [Title] that argues Y...'\n\n"
@@ -2388,7 +2405,8 @@ KNOWLEDGE BASE:
             f"What is the deep reason the same pattern appears in both domains? What does this reveal about how the world works?\n\n"
             f"TIME SCALE MIXING — prioritize sparks that connect things from different time scales: "
             f"something older (e.g. a book, a Torah insight, a past project) with something from recent weeks. "
-            f"NOTE: {JIMMY_USER_NAME} graduated from Columbia in May 2025. ALL courses are FINISHED. Do not reference any course as current work.\n\n"
+            f"- {JIMMY_USER_NAME} GRADUATED from Columbia undergrad in May 2025. Most Columbia courses are DONE (Fundies, Data Structures, etc). The only ones that might still be relevant are for his masters - Summer 2026 (Machine Learning and Statistics), and Fall 2026 (High Performace Machine Learning) ones, or Spring 2026 (OS, Networks, Algorithms, Accounting) — but even those are mostly historical since he's almost done with finals."
+            f"NEVER reference an old course, midterm, assignment, or exam as current or upcoming. They are historical.\n"
             f"ACTIONABLE INSIGHT — end the connection with: 'This means when you see X in [domain A], look for Y in [domain B]'\n\n"
             f"STRICT FIELD RULES:\n"
             f"- title: 5-10 words. A vivid, curious observation or question — NOT 'The Connection Between X and Y'\n"
