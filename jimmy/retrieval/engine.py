@@ -300,19 +300,25 @@ def _digest_item_excluded(meta: dict) -> bool:
     import re as _re_digest_item
     source = (meta.get("source", "") or "").lower().strip()
     title = meta.get("title", "") or ""
-    if source in {"calendar", "gmail", "google_calendar", "apple_calendar", "spotify"}:
+    title_lower = title.lower()
+    # Hard-exclude sources that are never useful in digest
+    if source in {"calendar", "gmail", "google_calendar", "apple_calendar", "spotify", "canvas"}:
         return True
     bad_title_patterns = [
         r'\b(exam|midterm|final|quiz|office hours|lecture)\b.*\d{1,2}:\d{2}',
         r'\d{1,2}:\d{2}\s*(am|pm)',
         r'\b(due|deadline)\b.*\d{1,2}/\d{1,2}',
+        r'\b(take.home|midterm|final exam)\b',
     ]
     if any(_re_digest_item.search(pat, title, _re_digest_item.IGNORECASE) for pat in bad_title_patterns):
         return True
     if _should_exclude_recent_item(source, title):
         return True
-    # Old passive course files are usually misleading in the digest.
-    if source == "canvas" and _digest_source_score(meta) < 0.5:
+    # Meta/organizational notes — not substantive content
+    if any(kw in title_lower for kw in [
+        "import all", "convert all", "move all", "transfer all",
+        "organize all", "sort all", "to do list", "suggestion box",
+    ]):
         return True
     # Exclude content older than 120 days unless it's personal notes
     from datetime import date as _date_exc
@@ -1360,9 +1366,14 @@ class JimmyEngine:
             f"1 sentence. One specific, actionable thing tied to actual notes or work.\n\n"
             f"HARD RULES:\n"
             f"- 150-200 words. Shorter is better.\n"
-            f"- NEVER reference old Columbia courses (OS, Algorithms, Networks, Accounting) as current work — they are DONE\n"
+            f"- {JIMMY_USER_NAME} GRADUATED from Columbia undergrad in May 2025. Most Columbia courses are DONE (Fundies, Data Structures, etc). The only ones that might still be relevant are Spring 2026, Summer 2026 (Machine Learning and ), and Fall 2026 ones (OS, Networks, Algorithms, Accounting) — but even those are mostly historical since he's done with midterms and finals."
+            f"NEVER reference any course, midterm, assignment, or exam as current or upcoming. They are historical.\n"
             f"- If you see contradictory information across different dates, ALWAYS prefer the most recent version. "
-            f"Old plans, decisions, or preferences may have been superseded.\n"
+            f"Old plans, decisions, or preferences may have been superseded. A note from 2024 about 'registering for a course' is STALE — ignore it.\n"
+            f"- For Torah/parasha: do NOT guess the parasha. If the sources mention a specific parasha, check if it makes sense for {today}. "
+            f"If unsure, just skip the parasha reference entirely rather than risk naming the wrong one.\n"
+            f"- SKIP content that is just a task/reminder (e.g. 'Import data into Notion', 'organize notes'). Only surface substantive ideas.\n"
+            f"- NEVER force connections between unrelated content. If two sources don't genuinely relate, don't pretend they do.\n"
             f"- NO calendar events, exam dates, deadlines, meetings\n"
             f"- NO bullet points, NO emojis, NO URLs, NO citations like [1]\n"
             f"- NO greetings ('Good morning' etc)\n"
@@ -2071,10 +2082,10 @@ KNOWLEDGE BASE:
         today = _date.today().isoformat()
         cutoff_recent = (_date.today() - timedelta(days=days_recent)).isoformat()
         cutoff_old    = (_date.today() - timedelta(days=days_old)).isoformat()
-        SPARK_EXCLUDE = {"calendar", "gmail", "google_calendar"}
+        SPARK_EXCLUDE = {"calendar", "gmail", "google_calendar", "canvas", "spotify"}
         # High-signal sources: prefer content user actively studied/read/wrote
         HIGH_SIGNAL_SOURCES = {
-            "canvas", "apple_notes", "note", "granola", "kindle", "readwise",
+            "apple_notes", "note", "granola", "kindle", "readwise",
             "notion", "pocket", "youtube", "podcast", "file", "gdrive",
             "github", "twitter",
         }
@@ -2372,13 +2383,12 @@ KNOWLEDGE BASE:
             f"- If a pair is weak, obvious, or surface-level — OMIT IT. 3 great sparks > 8 mediocre ones\n\n"
             f"ENGAGEMENT RULES — how to reference each item:\n"
             f"- WROTE / EDITED / BUILT / ATTENDED → {JIMMY_USER_NAME} knows this. Say 'In your notes on X...' or 'you wrote that...'\n"
-            f"- COURSE MATERIAL → don't assume he internalized it. Say 'Your [OS/Networks/Algo] class covered X as...' Frame as discovery.\n"
             f"- SAVED → don't assume he read it. Say 'you saved a [article/video] called [Title] that argues Y...'\n\n"
             f"ELABORATIVE INTERROGATION — for the connection field, always answer: WHY does this connection exist? "
             f"What is the deep reason the same pattern appears in both domains? What does this reveal about how the world works?\n\n"
             f"TIME SCALE MIXING — prioritize sparks that connect things from different time scales: "
-            f"something from last year (e.g. Macroeconomics, Distributed Systems) with something from this week (OS, Networks, Accounting). "
-            f"This is the most valuable kind of spark — it activates old knowledge through new context.\n\n"
+            f"something older (e.g. a book, a Torah insight, a past project) with something from recent weeks. "
+            f"NOTE: {JIMMY_USER_NAME} graduated from Columbia in May 2025. ALL courses are FINISHED. Do not reference any course as current work.\n\n"
             f"ACTIONABLE INSIGHT — end the connection with: 'This means when you see X in [domain A], look for Y in [domain B]'\n\n"
             f"STRICT FIELD RULES:\n"
             f"- title: 5-10 words. A vivid, curious observation or question — NOT 'The Connection Between X and Y'\n"

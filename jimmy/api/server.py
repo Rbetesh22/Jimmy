@@ -57,11 +57,14 @@ class CacheHeaderMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: StarletteRequest, call_next):
         response = await call_next(request)
-        if request.method == "GET" and "refresh=true" not in str(request.url):
-            for prefix, max_age in self.CACHE_RULES.items():
-                if request.url.path == prefix or request.url.path.startswith(prefix + "/"):
-                    response.headers["Cache-Control"] = f"private, max-age={max_age}, stale-while-revalidate={max_age * 2}"
-                    break
+        if request.method == "GET":
+            if "refresh=true" in str(request.url):
+                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            else:
+                for prefix, max_age in self.CACHE_RULES.items():
+                    if request.url.path == prefix or request.url.path.startswith(prefix + "/"):
+                        response.headers["Cache-Control"] = f"private, max-age={max_age}, stale-while-revalidate={max_age * 2}"
+                        break
         return response
 
 
@@ -706,12 +709,12 @@ def resurface_random():
     import re as _re
     store = get_store()
 
-    # Prioritized sources — personal and course content
+    # Prioritized sources — personal content with real substance
     PRIORITY_SOURCES = ["apple_notes", "granola", "note", "notion", "kindle", "readwise", "voice_memo"]
-    EXCLUDE_SOURCES = {"calendar", "gmail", "spotify", "folder"}
-    CURRENT_COURSE_TERMS = {"operating systems", "computer networks", "algorithms", "financial accounting", "os", "networks", "accounting"}
+    EXCLUDE_SOURCES = {"calendar", "gmail", "spotify", "folder", "canvas"}  # canvas = graduated, all historical
 
     def _is_low_quality_candidate(doc: str, meta: dict) -> bool:
+        from datetime import date as _date_check
         src = (meta.get("source", "") or "").lower()
         title = (meta.get("title", "") or "").strip()
         title_norm = title.lower()
@@ -720,13 +723,13 @@ def resurface_random():
             return True
         if len(compact) < 120:
             return True
+        # Meta/organizational notes — not real content
         if title_norm in {"test", "test note", "to do", "suggestion box", "daily", "feedback"}:
             return True
         if title_norm.startswith("note: to do") or title_norm.startswith("re:") or title_norm == "(no subject)":
             return True
-        if src == "canvas" and not any(term in title_norm for term in CURRENT_COURSE_TERMS):
-            return True
-        if src == "canvas" and title.lower().endswith((".pdf", ".pptx", ".docx", ".txt")):
+        # Task-like notes: "Import X into Y", "Convert X to Y", short instructions
+        if any(kw in title_norm for kw in ["import all", "convert all", "move all", "transfer all", "organize all", "sort all"]):
             return True
         if _re.fullmatch(r"[\w\-. ]+\.(pdf|docx|pptx|txt)", title_norm):
             return True
@@ -734,18 +737,38 @@ def resurface_random():
             return True
         if compact.count("\n") == 0 and len(set(compact.split())) < 12:
             return True
+        # Content quality: doc is mostly just the title repeated or a single short instruction
+        doc_lower = compact.lower()
+        if len(compact) < 200 and any(kw in doc_lower for kw in [
+            "import all", "convert all", "move to notion", "organize into", "transfer to",
+            "subcategories and hyperlinks", "sort into folders"
+        ]):
+            return True
+        # Recency filter: skip content older than 1 year for resurface
+        date_str = meta.get("date", meta.get("created_at", ""))
+        if date_str:
+            try:
+                days_old = (_date_check.today() - _date_check.fromisoformat(date_str[:10])).days
+                if days_old > 365:
+                    return True
+            except Exception:
+                pass
         return False
 
     try:
         # Try to get chunks from priority sources first via targeted searches
         SEARCH_SEEDS = [
-            "insight idea concept note",
-            "learned realized discovered thought",
-            "lecture class course assignment",
-            "meeting discussion talked decided",
-            "highlight quote passage book reading",
+            "insight idea concept lesson learned",
+            "interesting thought reflection personal",
+            "book highlight reading wisdom quote",
+            "Torah Jewish parasha insight wisdom",
+            "project engineering design decision",
+            "Datadog observability monitoring system",
+            "meeting discussion key takeaway",
+            "strategy business startup idea plan",
         ]
         seen_ids: set = set()
+        seen_titles: set = set()  # deduplicate by title
         candidates = []
 
         for seed in SEARCH_SEEDS:
@@ -757,6 +780,14 @@ def resurface_random():
                     src = meta.get("source", "")
                     if _is_low_quality_candidate(doc, meta):
                         continue
+                    # Deduplicate by title (e.g. multiple chunks from same meeting)
+                    # Strip dates/times from title for dedup (same recurring meeting = same title)
+                    title_raw = (meta.get("title", "") or "").lower().strip()
+                    title_key = _re.sub(r'\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}\s*(am|pm)?|\(\d{4}.*?\)', '', title_raw).strip()[:50]
+                    if title_key and title_key in seen_titles:
+                        continue
+                    if title_key:
+                        seen_titles.add(title_key)
                     seen_ids.add(doc_id)
                     priority = 0 if src in PRIORITY_SOURCES else 1
                     candidates.append((priority, doc, meta, doc_id))
@@ -766,10 +797,13 @@ def resurface_random():
         if not candidates:
             raise HTTPException(status_code=404, detail="No content found in knowledge base.")
 
-        # Sort by priority, then pick randomly within the top priority tier
+        # Sort by priority, then pick randomly from top priority tier (cap pool to avoid always same items)
         candidates.sort(key=lambda x: x[0])
         top_priority = candidates[0][0]
         top_pool = [c for c in candidates if c[0] == top_priority]
+        # If pool is too small, include next tier too
+        if len(top_pool) < 10:
+            top_pool = candidates[:max(10, len(top_pool))]
         chosen = _random.choice(top_pool)
         _, doc, meta, doc_id = chosen
 
@@ -1621,7 +1655,8 @@ def news(refresh: bool = False):
         {"url": "https://rss.nytimes.com/services/xml/rss/nyt/World.xml", "category": "World", "label": "NY Times"},
         {"url": "https://feeds.bbci.co.uk/news/world/rss.xml", "category": "World", "label": "BBC World"},
         {"url": "https://feeds.reuters.com/reuters/topNews", "category": "World", "label": "Reuters"},
-        {"url": "https://www.aljazeera.com/xml/rss/all.xml", "category": "World", "label": "Al Jazeera"},
+        # Al Jazeera deprioritized — only kept as low-priority fallback
+        # {"url": "https://www.aljazeera.com/xml/rss/all.xml", "category": "World", "label": "Al Jazeera"},
         {"url": "https://rsshub.app/apnews/topics/apf-topnews", "category": "World", "label": "AP News"},
         {"url": "https://www.theguardian.com/world/rss", "category": "World", "label": "The Guardian"},
         {"url": "https://feeds.nbcnews.com/nbcnews/public/news", "category": "World", "label": "NBC News"},
@@ -1920,6 +1955,18 @@ def news(refresh: bool = False):
                     pass
             threading.Thread(target=_backfill, args=(remaining, cache_path), daemon=True).start()
 
+    # Source priority — preferred sources appear first within each category
+    SOURCE_PRIORITY = {
+        "NY Times": 1, "NY Times US": 1, "WSJ Markets": 1, "Bloomberg": 1,
+        "TechCrunch": 1, "TechCrunch AI": 1, "Reuters": 2, "BBC World": 2,
+        "The Athletic": 1, "ESPN": 2, "ESPN NBA": 2, "ESPN NHL": 2, "ESPN NFL": 2,
+        "Times of Israel": 1, "Jerusalem Post": 2, "Anthropic": 1, "OpenAI": 1,
+        "AP News": 3, "The Verge": 3, "Hacker News": 3, "Politico": 2,
+        "The Guardian": 4, "NBC News": 4, "Axios": 3, "NPR": 3,
+        "Al Jazeera": 9,  # deprioritized
+    }
+    articles.sort(key=lambda a: SOURCE_PRIORITY.get(a["source"], 5))
+
     # Group by category (cap 10 per category)
     by_category: dict[str, list] = {}
     cat_counts: dict[str, int] = {}
@@ -1943,14 +1990,19 @@ def news(refresh: bool = False):
 
 
 @app.get("/news/summary")
-def news_summary():
+def news_summary(refresh: bool = False):
     """Generate AI headline brief from cached news. Cached 30 min alongside news."""
     import json
     from pathlib import Path
     from datetime import datetime, timedelta
 
     summary_cache_path = JIMMY_DATA_DIR / "news_summary_cache.json"
-    if summary_cache_path.exists():
+    if refresh and summary_cache_path.exists():
+        try:
+            summary_cache_path.unlink()
+        except Exception:
+            pass
+    if not refresh and summary_cache_path.exists():
         try:
             cached = json.loads(summary_cache_path.read_text())
             cached_at = datetime.fromisoformat(cached.get("cached_at", "2000-01-01"))
